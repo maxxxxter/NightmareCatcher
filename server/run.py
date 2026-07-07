@@ -63,6 +63,17 @@ def main() -> None:
         server.should_exit = True
         icon.stop()
 
+    def watchdog() -> None:
+        # Stirbt der Server (z.B. Port schon belegt), darf kein verwaistes
+        # Tray-Symbol ohne laufenden Server übrig bleiben.
+        server_thread.join()
+        print("Server-Thread beendet - Tray-Symbol wird entfernt. "
+              "Falls unerwartet: Läuft bereits eine andere Instanz auf dem Port?")
+        try:
+            icon.stop()
+        except Exception:
+            pass
+
     icon = pystray.Icon(
         "NightmareCatcher",
         make_icon_image(),
@@ -72,6 +83,7 @@ def main() -> None:
             pystray.MenuItem("Beenden", on_quit),
         ),
     )
+    threading.Thread(target=watchdog, daemon=True).start()
     icon.run()  # blockiert bis "Beenden"
     server_thread.join(timeout=10)
 

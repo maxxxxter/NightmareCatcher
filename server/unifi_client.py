@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 import httpx
 
 log = logging.getLogger("netdiag.unifi")
+
+
+class UnifiLoginError(Exception):
+    """Login abgelehnt oder pausiert - mit verständlicher Ursache."""
 
 
 class UnifiClient:
@@ -26,28 +31,67 @@ class UnifiClient:
         self._client = httpx.AsyncClient(verify=verify_ssl, timeout=10.0)
         self._is_unifi_os: Optional[bool] = None
         self._csrf_token: Optional[str] = None
+        # Backoff nach fehlgeschlagenem Login: verhindert einen Login-Sturm,
+        # der sonst das Rate-Limit des Controllers auslöst (HTTP 429) und
+        # den Zugang dauerhaft blockiert.
+        self._login_blocked_until: float = 0.0
+        self._last_login_error: str = ""
+
+    def _block_login(self, reason: str, seconds: float) -> None:
+        self._login_blocked_until = time.time() + seconds
+        self._last_login_error = reason
+        log.warning("UniFi-Login: %s - nächster Versuch in %d s", reason, int(seconds))
 
     async def _login(self) -> None:
-        try:
-            resp = await self._client.post(
-                f"{self.base}/api/auth/login",
-                json={"username": self.username, "password": self.password},
+        now = time.time()
+        if now < self._login_blocked_until:
+            raise UnifiLoginError(
+                f"{self._last_login_error} (nächster Login-Versuch in "
+                f"{int(self._login_blocked_until - now)} s)"
             )
-            if resp.status_code == 200:
-                self._is_unifi_os = True
-                self._csrf_token = resp.headers.get("x-csrf-token") or resp.headers.get("x-updated-csrf-token")
-                log.info("UniFi-Login erfolgreich (UniFi OS)")
-                return
-        except httpx.HTTPError as e:
-            log.debug("UniFi-OS-Login nicht möglich, versuche klassischen Controller: %s", e)
 
-        resp = await self._client.post(
-            f"{self.base}/api/login",
-            json={"username": self.username, "password": self.password},
-        )
-        resp.raise_for_status()
-        self._is_unifi_os = False
-        log.info("UniFi-Login erfolgreich (klassischer Controller)")
+        credentials = {"username": self.username, "password": self.password}
+        try:
+            resp = await self._client.post(f"{self.base}/api/auth/login", json=credentials)
+        except httpx.HTTPError as e:
+            self._block_login(f"Controller nicht erreichbar: {e}", 30)
+            raise UnifiLoginError(self._last_login_error)
+
+        if resp.status_code == 200:
+            self._is_unifi_os = True
+            self._csrf_token = resp.headers.get("x-csrf-token") or resp.headers.get("x-updated-csrf-token")
+            self._login_blocked_until = 0.0
+            log.info("UniFi-Login erfolgreich (UniFi OS)")
+            return
+
+        if resp.status_code == 404:
+            # Endpunkt existiert nicht -> klassischer, selbst gehosteter Controller
+            try:
+                resp2 = await self._client.post(f"{self.base}/api/login", json=credentials)
+            except httpx.HTTPError as e:
+                self._block_login(f"Controller nicht erreichbar: {e}", 30)
+                raise UnifiLoginError(self._last_login_error)
+            if resp2.status_code == 200:
+                self._is_unifi_os = False
+                self._login_blocked_until = 0.0
+                log.info("UniFi-Login erfolgreich (klassischer Controller)")
+                return
+            self._block_login(
+                f"Zugangsdaten vom klassischen Controller abgelehnt (HTTP {resp2.status_code})", 120)
+            raise UnifiLoginError(self._last_login_error)
+
+        if resp.status_code == 429:
+            # Rate-Limit: JETZT NICHT weiter versuchen, sonst hebt es sich nie auf.
+            self._block_login(
+                "Rate-Limit des Controllers erreicht (HTTP 429, zu viele Login-Versuche). "
+                "Warte einige Minuten, das Limit hebt sich von selbst auf", 300)
+            raise UnifiLoginError(self._last_login_error)
+
+        # 401/403: Zugangsdaten falsch, Konto gesperrt oder Cloud-Konto ohne lokales Passwort
+        self._block_login(
+            f"Zugangsdaten abgelehnt (HTTP {resp.status_code}). Nutzername/Passwort auf der "
+            f"Einstellungen-Seite prüfen; der Nutzer muss ein lokaler Controller-Nutzer sein", 120)
+        raise UnifiLoginError(self._last_login_error)
 
     def _api_base(self) -> str:
         return f"{self.base}/proxy/network/api" if self._is_unifi_os else f"{self.base}/api"
