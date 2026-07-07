@@ -1,0 +1,29 @@
+# Kopieren nach config.yaml und anpassen. Nur für die einmalige Startbefüllung -
+# danach werden alle Einstellungen über die Einstellungen-Seite im Browser gepflegt.
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+unifi:
+  enabled: true
+  # UniFi-OS-Konsole (z.B. UDM, UDM-Pro, UDR, Cloud Gateway) -> nur https://<ip>
+  # Klassischer Controller -> https://<ip>:8443
+  controller_url: "https://192.168.1.1"
+  username: "monitoring-ro"     # separater, lokaler Nutzer mit Leserecht empfohlen
+  password: "CHANGE_ME"
+  site: "default"
+  verify_ssl: false             # UniFi nutzt i.d.R. selbstsignierte Zertifikate
+  poll_interval_seconds: 30
+
+thresholds:
+  loss_percent_warn: 1.0
+  loss_percent_crit: 8.0
+  jitter_ms_warn: 10
+  jitter_ms_crit: 40
+  unifi_port_error_delta_warn: 5   # neue Fehler/Drops pro Poll-Intervall, ab der gewarnt wird
+  correlation_window_seconds: 30   # Zeitfenster, in dem Ereignisse als zusammenhängend gelten
+  stale_after_seconds: 60          # ab wann ein Gerät als "keine Daten" gilt
+
+database:
+  path: "netdiag.db"

@@ -1,0 +1,20 @@
+# Kopieren nach config.yaml (pro PC eine eigene Datei mit eigenem device_name/floor).
+
+agent:
+  device_name: "PC-Buero"        # eindeutiger Name, taucht so im Dashboard auf
+  floor: "1.OG"                  # EG | 1.OG | 2.OG
+  server_url: "http://192.168.1.50:8000"   # Adresse des Diagnose-Servers
+  report_interval_seconds: 10
+  ping_count: 8
+
+targets:
+  gateway: "192.168.1.1"          # UniFi Router/Gateway-IP
+  floor_switch: ""                # Management-IP des Etagen-Switches, falls vorhanden (sonst leer lassen)
+  internet:
+    - "1.1.1.1"
+    - "8.8.8.8"
+
+anomaly:
+  loss_percent_trigger: 2.0       # ab diesem Verlust wird ein Ereignis gemeldet
+  jitter_ms_trigger: 15           # ab diesem Jitter wird ein Ereignis gemeldet
+  traceroute_on_anomaly: true     # bei Auffälligkeit zu Internet-Zielen automatisch Traceroute mitschicken

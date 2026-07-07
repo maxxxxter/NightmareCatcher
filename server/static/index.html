@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NightmareCatcher</title>
+<style>
+  :root {
+    --bg: #111318;
+    --card-bg: #1c1e26;
+    --card-bg-hover: #23252e;
+    --border: #2c2e38;
+    --text: #e1e3e8;
+    --text-muted: #9a9da8;
+    --accent: #03a9f4;
+    --ok: #4caf50;
+    --ok-bg: rgba(76, 175, 80, 0.16);
+    --warn: #ffb300;
+    --warn-bg: rgba(255, 179, 0, 0.16);
+    --crit: #f44336;
+    --crit-bg: rgba(244, 67, 54, 0.16);
+    --unknown: #9a9da8;
+    --unknown-bg: rgba(154, 157, 168, 0.14);
+    --gauge-track: #2c2e38;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 14px;
+  }
+  nav { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  nav a { text-decoration: none; color: var(--text-muted); padding: 6px 14px; border-radius: 8px; font-size: 14px; }
+  nav a.active { color: var(--accent); background: var(--card-bg); font-weight: 600; border: 1px solid var(--border); }
+  nav a:hover { color: var(--text); }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .subtitle { color: var(--text-muted); margin: 0 0 24px; font-size: 13px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .card h2 { font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .level-ok { color: var(--ok); background: var(--ok-bg); }
+  .level-warning { color: var(--warn); background: var(--warn-bg); }
+  .level-critical { color: var(--crit); background: var(--crit-bg); }
+  .level-unknown { color: var(--unknown); background: var(--unknown-bg); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-muted); font-weight: 500; }
+  tr:last-child td { border-bottom: none; }
+  .section { margin-bottom: 24px; }
+  .section > h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; }
+  .event-row { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); align-items: flex-start; }
+  .event-row:last-child { border-bottom: none; }
+  .event-time { color: var(--text-muted); width: 130px; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+  .event-msg { flex: 1; }
+  .event-related { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .empty { color: var(--text-muted); padding: 12px 0; }
+  .source-tag { font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted); }
+  .gauge-row { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; }
+  .gauge-block { text-align: center; width: 220px; }
+  .gauge-value { font-size: 24px; font-weight: 600; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .gauge-label { font-size: 12px; color: var(--text-muted); }
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .metric {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px;
+  }
+  .metric .label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+  .metric .value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .metric.m-ok .value { color: var(--ok); }
+  .metric.m-warning .value { color: var(--warn); }
+  .metric.m-critical .value { color: var(--crit); }
+  .metric.m-unknown .value { color: var(--text-muted); }
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="/" class="active">Dashboard</a>
+  <a href="/settings">Einstellungen</a>
+</nav>
+
+<h1>NightmareCatcher</h1>
+<p class="subtitle">Live-Status der Messagenten und der UniFi-Infrastruktur &middot; aktualisiert automatisch alle 5 s</p>
+
+<div class="section">
+  <h2>Internetauslastung</h2>
+  <div class="card">
+    <div class="gauge-row">
+      <div class="gauge-block">
+        <svg viewBox="0 0 200 120" width="100%">
+          <defs>
+            <linearGradient id="gauge-grad" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#4caf50"/>
+              <stop offset="55%" stop-color="#ffc107"/>
+              <stop offset="100%" stop-color="#f44336"/>
+            </linearGradient>
+          </defs>
+          <path d="M 20 110 A 80 80 0 0 1 180 110" fill="none" stroke="var(--gauge-track)" stroke-width="16" stroke-linecap="round"/>
+          <path id="gauge-down-arc" d="M 20 110 A 80 80 0 0 1 180 110" fill="none" stroke="url(#gauge-grad)" stroke-width="16" stroke-linecap="round" stroke-dasharray="251.2" stroke-dashoffset="251.2" style="transition: stroke-dashoffset 0.8s ease;"/>
+        </svg>
+        <div class="gauge-value" id="gauge-down-value">– Mbit/s</div>
+        <div class="gauge-label">Download</div>
+      </div>
+      <div class="gauge-block">
+        <svg viewBox="0 0 200 120" width="100%">
+          <path d="M 20 110 A 80 80 0 0 1 180 110" fill="none" stroke="var(--gauge-track)" stroke-width="16" stroke-linecap="round"/>
+          <path id="gauge-up-arc" d="M 20 110 A 80 80 0 0 1 180 110" fill="none" stroke="url(#gauge-grad)" stroke-width="16" stroke-linecap="round" stroke-dasharray="251.2" stroke-dashoffset="251.2" style="transition: stroke-dashoffset 0.8s ease;"/>
+        </svg>
+        <div class="gauge-value" id="gauge-up-value">– Mbit/s</div>
+        <div class="gauge-label">Upload</div>
+      </div>
+    </div>
+    <p class="subtitle" id="gauge-footnote" style="text-align:center; margin: 8px 0 0;"></p>
+    <div id="ping-panel" style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;"></div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Router (UDM)</h2>
+  <div class="card" id="gateway-card">
+    <p class="empty">Noch keine Gateway-Daten (UniFi-Integration prüfen).</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Geräte-Status</h2>
+  <div id="status-grid" class="grid"></div>
+</div>
+
+<div class="section">
+  <h2>UniFi-Infrastruktur</h2>
+  <div class="card">
+    <table id="unifi-table">
+      <thead><tr><th>Gerät</th><th>IP-Adresse</th><th>Typ</th><th>Stockwerk</th><th>Status</th><th>Zufriedenheit</th><th>Clients</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Ereignis-Zeitleiste</h2>
+  <div class="card" id="events-card"></div>
+</div>
+
+<script>
+const TYPE_LABELS = { usw: 'Switch', uap: 'Access Point', ugw: 'Router/Gateway', udm: 'Router/Gateway', uxg: 'Router/Gateway' };
+const CATEGORY_LABELS = {
+  packet_loss: 'Paketverlust', jitter: 'Jitter', disconnect: 'Verbindungsabbruch',
+  port_errors: 'Port-Fehler', device_offline: 'Gerät offline',
+  wifi_quality: 'WLAN-Qualität', wifi_congestion: 'WLAN-Auslastung',
+  gateway_load: 'Router-Auslastung', gateway_reboot: 'Router-Neustart',
+  wan_latency: 'Internet-Latenz', wan_status: 'WAN-Status',
+  ping_timeout: 'Ping-Ausfall', ping_latency: 'Ping-Latenz',
+  controller_log: 'UniFi-Log', controller_alarm: 'UniFi-Alarm',
+};
+const SOURCE_LABELS = { unifi: 'UniFi', agent: 'Agent', server: 'Server' };
+
+function fmtTime(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function fmtUptime(seconds) {
+  if (seconds == null) return '–';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  if (d > 0) return `${d} T ${h} h`;
+  const m = Math.floor((seconds % 3600) / 60);
+  return h > 0 ? `${h} h ${m} min` : `${m} min`;
+}
+
+function levelLabel(level) {
+  return { ok: 'Stabil', warning: 'Auffällig', critical: 'Kritisch', unknown: 'Keine Daten' }[level] || level;
+}
+
+function setGauge(arcId, valueId, mbps, maxMbps) {
+  const arc = document.getElementById(arcId);
+  const valueEl = document.getElementById(valueId);
+  const circumference = 251.2;
+  if (mbps == null) {
+    arc.style.strokeDashoffset = circumference;
+    valueEl.textContent = '– Mbit/s';
+    return;
+  }
+  const pct = Math.max(0, Math.min(1, mbps / (maxMbps || 500)));
+  arc.style.strokeDashoffset = String(circumference * (1 - pct));
+  valueEl.textContent = mbps.toFixed(1) + ' Mbit/s';
+}
+
+async function refreshThroughput() {
+  const res = await fetch('/api/unifi/throughput');
+  const t = await res.json();
+  setGauge('gauge-down-arc', 'gauge-down-value', t.down_mbps, t.wan_max_mbps);
+  setGauge('gauge-up-arc', 'gauge-up-value', t.up_mbps, t.wan_max_mbps);
+  const footnote = document.getElementById('gauge-footnote');
+  footnote.textContent = t.ts
+    ? `Referenz: ${t.wan_max_mbps} Mbit/s · Stand ${fmtTime(t.ts)}`
+    : 'Keine Durchsatzdaten vom UniFi-Gateway (Integration prüfen).';
+}
+
+function sparkline(samples, warnMs) {
+  if (samples.length < 2) return '<span class="empty" style="font-size:12px;">Sammle Daten…</span>';
+  const w = 300, h = 40;
+  const rtts = samples.map(s => s.rtt).filter(r => r != null);
+  const maxR = Math.max(warnMs * 1.2, ...(rtts.length ? rtts : [1]));
+  const pts = [];
+  let segments = [];
+  let current = [];
+  samples.forEach((s, i) => {
+    const x = (i / (samples.length - 1)) * w;
+    if (s.rtt == null) {
+      if (current.length > 1) segments.push(current);
+      current = [];
+      pts.push(`<circle cx="${x.toFixed(1)}" cy="6" r="3" fill="var(--crit)"/>`);
+    } else {
+      const y = h - 3 - (Math.min(s.rtt, maxR) / maxR) * (h - 8);
+      current.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+    }
+  });
+  if (current.length > 1) segments.push(current);
+  const warnY = h - 3 - (Math.min(warnMs, maxR) / maxR) * (h - 8);
+  const lines = segments.map(seg =>
+    `<polyline points="${seg.join(' ')}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>`).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none">
+    <line x1="0" y1="${warnY.toFixed(1)}" x2="${w}" y2="${warnY.toFixed(1)}" stroke="var(--warn)" stroke-width="1" stroke-dasharray="4 4" opacity="0.6"/>
+    ${lines}${pts.join('')}
+  </svg>`;
+}
+
+async function refreshPings() {
+  const res = await fetch('/api/server-pings');
+  const targets = await res.json();
+  const panel = document.getElementById('ping-panel');
+  panel.innerHTML = targets.map(t => `
+    <div style="display:flex; align-items:center; gap:16px; padding:6px 0;">
+      <div style="width:150px; flex:0 0 auto;">
+        <div style="font-size:13px;">Dauerping ${t.label}</div>
+        <div style="font-size:11px; color:var(--text-muted); font-variant-numeric:tabular-nums;">${t.ip}</div>
+      </div>
+      <div style="flex:1; min-width:0;">${sparkline(t.samples, t.warn_ms)}</div>
+      <div style="width:170px; flex:0 0 auto; text-align:right;">
+        <span class="badge level-${t.level}">${t.current_ms != null ? t.current_ms + ' ms' : 'Timeout'}</span>
+        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+          Ø ${t.avg_ms != null ? t.avg_ms + ' ms' : '–'} · max ${t.max_ms != null ? t.max_ms + ' ms' : '–'} · Verlust ${t.loss_percent != null ? t.loss_percent + '%' : '–'}
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function refreshGateway() {
+  const res = await fetch('/api/gateway/health');
+  const g = await res.json();
+  const card = document.getElementById('gateway-card');
+  if (!g.available) {
+    card.innerHTML = '<p class="empty">Noch keine Gateway-Daten (UniFi-Integration prüfen).</p>';
+    return;
+  }
+  const lv = g.levels || {};
+  const metrics = [
+    { label: 'CPU', value: g.cpu != null ? g.cpu.toFixed(0) + ' %' : '–', level: lv.cpu },
+    { label: 'Arbeitsspeicher', value: g.mem != null ? g.mem.toFixed(0) + ' %' : '–', level: lv.mem },
+    { label: 'Temperatur', value: g.temp != null ? g.temp + ' °C' : '–', level: lv.temp },
+    { label: 'Internet-Latenz', value: g.wan_latency_ms != null ? g.wan_latency_ms + ' ms' : '–', level: lv.wan_latency },
+    { label: 'WAN-Status', value: g.wan_status || '–', level: g.wan_status === 'ok' ? 'ok' : (g.wan_status ? 'critical' : 'unknown') },
+    { label: 'Laufzeit', value: fmtUptime(g.uptime), level: null },
+  ];
+  card.innerHTML = `
+    <p class="subtitle" style="margin-bottom:12px;">${g.name || 'Gateway'} · Stand ${fmtTime(g.ts)}</p>
+    <div class="metric-grid">
+      ${metrics.map(m => `
+        <div class="metric m-${m.level || 'none'}">
+          <div class="label">${m.label}</div>
+          <div class="value">${m.value}</div>
+        </div>`).join('')}
+    </div>
+  `;
+}
+
+async function refreshStatus() {
+  const res = await fetch('/api/status');
+  const rows = await res.json();
+  const grid = document.getElementById('status-grid');
+  if (rows.length === 0) {
+    grid.innerHTML = '<p class="empty">Noch keine Messdaten von Agenten empfangen.</p>';
+    return;
+  }
+  const byDevice = {};
+  for (const r of rows) {
+    byDevice[r.device_name] = byDevice[r.device_name] || { floor: r.floor, conn: r.connection_type, targets: [] };
+    byDevice[r.device_name].targets.push(r);
+  }
+  grid.innerHTML = '';
+  for (const [name, info] of Object.entries(byDevice)) {
+    const worst = info.targets.reduce((a, b) => {
+      const order = { unknown: 0, ok: 1, warning: 2, critical: 3 };
+      return order[b.level] > order[a.level] ? b : a;
+    });
+    const card = document.createElement('div');
+    card.className = 'card';
+    let rowsHtml = info.targets.map(t => `
+      <tr>
+        <td>${t.target_label}</td>
+        <td>${t.loss_percent}% Verlust</td>
+        <td>${t.jitter_ms != null ? t.jitter_ms.toFixed(1) + ' ms Jitter' : '–'}</td>
+      </tr>`).join('');
+    card.innerHTML = `
+      <h2>${name} <span class="badge level-${worst.level}">${levelLabel(worst.level)}</span></h2>
+      <p class="subtitle" style="margin-bottom:8px;">${info.floor} &middot; ${info.conn || 'unbekannt'}</p>
+      <table><tbody>${rowsHtml}</tbody></table>
+    `;
+    grid.appendChild(card);
+  }
+}
+
+async function refreshUnifi() {
+  const res = await fetch('/api/unifi/devices');
+  const rows = await res.json();
+  const tbody = document.querySelector('#unifi-table tbody');
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">Keine UniFi-Daten (Integration deaktiviert oder Controller nicht erreichbar) &ndash; siehe Einstellungen.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(d => `
+    <tr>
+      <td>${d.device_name || d.device_mac}</td>
+      <td style="font-variant-numeric: tabular-nums;">${d.ip || '–'}</td>
+      <td>${TYPE_LABELS[d.device_type] || d.device_type || '–'}</td>
+      <td>${d.floor || '–'}</td>
+      <td>${d.state === 1 ? '<span class="badge level-ok">Online</span>' : '<span class="badge level-critical">Offline</span>'}</td>
+      <td>${d.satisfaction != null ? d.satisfaction + '%' : '–'}</td>
+      <td>${d.num_sta != null ? d.num_sta : '–'}</td>
+    </tr>
+  `).join('');
+}
+
+async function refreshEvents() {
+  const res = await fetch('/api/events?limit=50');
+  const rows = await res.json();
+  const card = document.getElementById('events-card');
+  if (rows.length === 0) {
+    card.innerHTML = '<p class="empty">Noch keine Ereignisse aufgezeichnet.</p>';
+    return;
+  }
+  card.innerHTML = rows.map(e => `
+    <div class="event-row">
+      <div class="event-time">${fmtTime(e.ts)}</div>
+      <div class="event-msg">
+        <span class="badge level-${e.severity === 'critical' ? 'critical' : 'warning'}">${e.severity === 'critical' ? 'Kritisch' : 'Warnung'}</span>
+        <span class="source-tag">${SOURCE_LABELS[e.source] || e.source} · ${CATEGORY_LABELS[e.category] || e.category}${e.floor ? ' · ' + e.floor : ''}</span>
+        <div>${e.message}</div>
+        ${e.related.length > 0 ? `<div class="event-related">Zeitgleich: ${e.related.map(r => r.message).join(' · ')}</div>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+async function refreshAll() {
+  try {
+    await Promise.all([refreshThroughput(), refreshPings(), refreshGateway(), refreshStatus(), refreshUnifi(), refreshEvents()]);
+  } catch (e) {
+    console.error('Aktualisierung fehlgeschlagen', e);
+  }
+}
+
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
+
+</body>
+</html>

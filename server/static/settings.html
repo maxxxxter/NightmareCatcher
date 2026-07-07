@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Einstellungen &middot; NightmareCatcher</title>
+<style>
+  :root {
+    --bg: #111318;
+    --card-bg: #1c1e26;
+    --border: #2c2e38;
+    --text: #e1e3e8;
+    --text-muted: #9a9da8;
+    --accent: #03a9f4;
+    --ok: #4caf50;
+    --ok-bg: rgba(76, 175, 80, 0.16);
+    --warn: #ffb300;
+    --warn-bg: rgba(255, 179, 0, 0.16);
+    --crit: #f44336;
+    --crit-bg: rgba(244, 67, 54, 0.16);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 14px;
+  }
+  nav { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  nav a {
+    text-decoration: none; color: var(--text-muted); padding: 6px 14px; border-radius: 8px; font-size: 14px;
+  }
+  nav a.active { color: var(--accent); background: var(--card-bg); font-weight: 600; border: 1px solid var(--border); }
+  nav a:hover { color: var(--text); }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .subtitle { color: var(--text-muted); margin: 0 0 24px; font-size: 13px; }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .card h2 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  .card .hint { color: var(--text-muted); font-size: 12px; margin: 0 0 16px; }
+  .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+  label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+  input[type=text], input[type=password], input[type=number] {
+    width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+    background: var(--bg); color: var(--text);
+  }
+  input:focus, select:focus { outline: 1px solid var(--accent); }
+  input::placeholder { color: var(--text-muted); }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .checkbox-row input { width: auto; }
+  .actions { display: flex; gap: 10px; margin-top: 18px; align-items: center; }
+  button {
+    padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--card-bg);
+    color: var(--text); font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:active { transform: scale(0.98); }
+  #save-status, #test-status { font-size: 13px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .ok { color: var(--ok); background: var(--ok-bg); }
+  .fail { color: var(--crit); background: var(--crit-bg); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-muted); font-weight: 500; }
+  select { padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); font-size: 13px;
+    background: var(--bg); color: var(--text); }
+  .empty { color: var(--text-muted); padding: 8px 0; }
+  .row-saved { color: var(--ok); font-size: 12px; margin-left: 8px; }
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="/">Dashboard</a>
+  <a href="/settings" class="active">Einstellungen</a>
+</nav>
+
+<h1>NightmareCatcher &middot; Einstellungen</h1>
+<p class="subtitle">Alle Änderungen werden dauerhaft in der Server-Datenbank gespeichert &ndash; kein Bearbeiten von Konfigurationsdateien nötig.</p>
+
+<div class="card">
+  <h2>UniFi-Verbindung</h2>
+  <p class="hint">Zugangsdaten eines lokalen, schreibgeschützten UniFi-Nutzers.</p>
+  <div class="field-grid">
+    <div>
+      <label for="unifi_enabled">Integration aktiv</label>
+      <div class="checkbox-row"><input type="checkbox" id="unifi_enabled"><span>UniFi-Abfrage aktivieren</span></div>
+    </div>
+    <div>
+      <label for="unifi_controller_url">Controller-URL</label>
+      <input type="text" id="unifi_controller_url" placeholder="https://192.168.1.1">
+    </div>
+    <div>
+      <label for="unifi_username">Nutzername</label>
+      <input type="text" id="unifi_username" placeholder="monitoring-ro">
+    </div>
+    <div>
+      <label for="unifi_password">Passwort</label>
+      <input type="password" id="unifi_password" placeholder="unverändert lassen">
+    </div>
+    <div>
+      <label for="unifi_site">Site</label>
+      <input type="text" id="unifi_site" placeholder="default">
+    </div>
+    <div>
+      <label for="unifi_poll_interval_seconds">Abfrage-Intervall (s)</label>
+      <input type="number" id="unifi_poll_interval_seconds" min="5">
+    </div>
+    <div>
+      <label for="unifi_verify_ssl">Zertifikat</label>
+      <div class="checkbox-row"><input type="checkbox" id="unifi_verify_ssl"><span>Zertifikat streng prüfen (bei selbstsigniertem Zertifikat deaktiviert lassen)</span></div>
+    </div>
+  </div>
+  <div class="actions">
+    <button id="test-btn" type="button">Verbindung testen</button>
+    <span id="test-status"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Schwellwerte</h2>
+  <p class="hint">Ab wann ein Messwert als auffällig (Warnung) oder kritisch gilt.</p>
+  <div class="field-grid">
+    <div><label for="loss_percent_warn">Paketverlust Warnung (%)</label><input type="number" step="0.1" id="loss_percent_warn"></div>
+    <div><label for="loss_percent_crit">Paketverlust kritisch (%)</label><input type="number" step="0.1" id="loss_percent_crit"></div>
+    <div><label for="jitter_ms_warn">Jitter Warnung (ms)</label><input type="number" step="1" id="jitter_ms_warn"></div>
+    <div><label for="jitter_ms_crit">Jitter kritisch (ms)</label><input type="number" step="1" id="jitter_ms_crit"></div>
+    <div><label for="unifi_port_error_delta_warn">Neue Port-Fehler/Drops für Warnung</label><input type="number" step="1" id="unifi_port_error_delta_warn"></div>
+    <div><label for="wifi_satisfaction_warn">WLAN-Zufriedenheit Warnung (%, darunter)</label><input type="number" step="1" id="wifi_satisfaction_warn"></div>
+    <div><label for="wifi_satisfaction_crit">WLAN-Zufriedenheit kritisch (%, darunter)</label><input type="number" step="1" id="wifi_satisfaction_crit"></div>
+    <div><label for="wifi_cu_warn">WLAN-Kanalauslastung Warnung (%, darüber)</label><input type="number" step="1" id="wifi_cu_warn"></div>
+    <div><label for="wifi_cu_crit">WLAN-Kanalauslastung kritisch (%, darüber)</label><input type="number" step="1" id="wifi_cu_crit"></div>
+    <div><label for="gw_cpu_warn">Router-CPU Warnung (%)</label><input type="number" step="1" id="gw_cpu_warn"></div>
+    <div><label for="gw_cpu_crit">Router-CPU kritisch (%)</label><input type="number" step="1" id="gw_cpu_crit"></div>
+    <div><label for="gw_mem_warn">Router-Speicher Warnung (%)</label><input type="number" step="1" id="gw_mem_warn"></div>
+    <div><label for="gw_mem_crit">Router-Speicher kritisch (%)</label><input type="number" step="1" id="gw_mem_crit"></div>
+    <div><label for="gw_temp_warn">Router-Temperatur Warnung (°C)</label><input type="number" step="1" id="gw_temp_warn"></div>
+    <div><label for="gw_temp_crit">Router-Temperatur kritisch (°C)</label><input type="number" step="1" id="gw_temp_crit"></div>
+    <div><label for="wan_latency_ms_warn">Internet-Latenz Warnung (ms)</label><input type="number" step="1" id="wan_latency_ms_warn"></div>
+    <div><label for="wan_latency_ms_crit">Internet-Latenz kritisch (ms)</label><input type="number" step="1" id="wan_latency_ms_crit"></div>
+    <div><label for="correlation_window_seconds">Korrelations-Zeitfenster (s)</label><input type="number" step="1" id="correlation_window_seconds"></div>
+    <div><label for="stale_after_seconds">"Keine Daten" ab (s)</label><input type="number" step="1" id="stale_after_seconds"></div>
+    <div><label for="event_cooldown_seconds">Mindestabstand gleicher Ereignisse (s)</label><input type="number" step="1" id="event_cooldown_seconds"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Internetauslastung</h2>
+  <p class="hint">Referenzwert für die Speedmeter-Anzeige im Dashboard (z.B. gebuchte Bandbreite deines Anschlusses).</p>
+  <div class="field-grid">
+    <div><label for="wan_max_mbps">Anschluss-Bandbreite (Mbit/s)</label><input type="number" step="1" id="wan_max_mbps"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Dauerping (vom Server)</h2>
+  <p class="hint">Der Server pingt diese Ziele permanent an, um auch kurze Lags zu erfassen. Anzeige unter dem Speedmeter im Dashboard.</p>
+  <div class="field-grid">
+    <div><label for="ping_target_local">Lokales Ziel (Gateway)</label><input type="text" id="ping_target_local"></div>
+    <div><label for="ping_target_internet">Internet-Ziel</label><input type="text" id="ping_target_internet"></div>
+    <div><label for="server_ping_interval_seconds">Intervall (s)</label><input type="number" step="1" id="server_ping_interval_seconds"></div>
+    <div><label for="ping_local_warn_ms">Lokal Warnung (ms)</label><input type="number" step="1" id="ping_local_warn_ms"></div>
+    <div><label for="ping_local_crit_ms">Lokal kritisch (ms)</label><input type="number" step="1" id="ping_local_crit_ms"></div>
+    <div><label for="ping_internet_warn_ms">Internet Warnung (ms)</label><input type="number" step="1" id="ping_internet_warn_ms"></div>
+    <div><label for="ping_internet_crit_ms">Internet kritisch (ms)</label><input type="number" step="1" id="ping_internet_crit_ms"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>E-Mail-Berichte</h2>
+  <p class="hint">Sendet im gewählten Intervall einen Bericht, welche Geräte an Lags/Störungen beteiligt waren. Bei GMX/Web.de/Gmail: SMTP-Server des Anbieters und ggf. App-Passwort verwenden.</p>
+  <div class="field-grid">
+    <div>
+      <label for="mail_enabled">Berichte aktiv</label>
+      <div class="checkbox-row"><input type="checkbox" id="mail_enabled"><span>Berichte automatisch senden</span></div>
+    </div>
+    <div><label for="mail_report_interval_hours">Berichtsintervall (Stunden)</label><input type="number" step="1" min="1" id="mail_report_interval_hours"></div>
+    <div><label for="mail_smtp_host">SMTP-Server</label><input type="text" id="mail_smtp_host" placeholder="smtp.example.de"></div>
+    <div><label for="mail_smtp_port">SMTP-Port</label><input type="number" id="mail_smtp_port" placeholder="587"></div>
+    <div>
+      <label for="mail_use_tls">Verschlüsselung</label>
+      <div class="checkbox-row"><input type="checkbox" id="mail_use_tls"><span>STARTTLS verwenden (bei Port 465 wird automatisch SSL genutzt)</span></div>
+    </div>
+    <div><label for="mail_username">Benutzername</label><input type="text" id="mail_username"></div>
+    <div><label for="mail_password">Passwort</label><input type="password" id="mail_password" placeholder="unverändert lassen"></div>
+    <div><label for="mail_from">Absenderadresse</label><input type="text" id="mail_from" placeholder="leer = Benutzername"></div>
+    <div><label for="mail_to">Empfängeradresse</label><input type="text" id="mail_to"></div>
+  </div>
+  <div class="actions">
+    <button id="mail-test-btn" type="button">Test-Mail senden</button>
+    <span id="mail-test-status"></span>
+  </div>
+</div>
+
+<div class="actions" style="margin: -6px 0 24px;">
+  <button class="primary" id="save-btn" type="button">Einstellungen speichern</button>
+  <span id="save-status"></span>
+</div>
+
+<div class="card">
+  <h2>Geräte &amp; Stockwerke</h2>
+  <p class="hint">UniFi-Geräte werden automatisch erkannt und anhand des Namens einem Stockwerk zugeordnet (z.B. "Switch 1.OG" &rarr; 1.OG, "AP Büro" &rarr; 2.OG). Eine manuelle Auswahl übersteuert die Automatik dauerhaft.</p>
+  <table id="device-table">
+    <thead><tr><th>Gerät</th><th>IP-Adresse</th><th>Typ</th><th>Modell</th><th>Stockwerk</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+const FIELD_IDS = [
+  'unifi_enabled', 'unifi_controller_url', 'unifi_username', 'unifi_password', 'unifi_site',
+  'unifi_poll_interval_seconds', 'unifi_verify_ssl',
+  'loss_percent_warn', 'loss_percent_crit', 'jitter_ms_warn', 'jitter_ms_crit',
+  'unifi_port_error_delta_warn', 'wifi_satisfaction_warn', 'wifi_satisfaction_crit',
+  'wifi_cu_warn', 'wifi_cu_crit', 'correlation_window_seconds', 'stale_after_seconds',
+  'event_cooldown_seconds', 'wan_max_mbps',
+  'gw_cpu_warn', 'gw_cpu_crit', 'gw_mem_warn', 'gw_mem_crit',
+  'gw_temp_warn', 'gw_temp_crit', 'wan_latency_ms_warn', 'wan_latency_ms_crit',
+  'server_ping_interval_seconds', 'ping_target_local', 'ping_target_internet',
+  'ping_local_warn_ms', 'ping_local_crit_ms', 'ping_internet_warn_ms', 'ping_internet_crit_ms',
+  'mail_enabled', 'mail_smtp_host', 'mail_smtp_port', 'mail_use_tls',
+  'mail_username', 'mail_password', 'mail_from', 'mail_to', 'mail_report_interval_hours',
+];
+const BOOL_IDS = ['unifi_enabled', 'unifi_verify_ssl', 'mail_enabled', 'mail_use_tls'];
+const SECRET_IDS = ['unifi_password', 'mail_password'];
+
+const TYPE_LABELS = { usw: 'Switch', uap: 'Access Point', ugw: 'Router/Gateway', udm: 'Router/Gateway', uxg: 'Router/Gateway' };
+
+async function loadSettings() {
+  const res = await fetch('/api/settings');
+  const s = await res.json();
+  for (const id of FIELD_IDS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (BOOL_IDS.includes(id)) {
+      el.checked = !!s[id];
+    } else if (SECRET_IDS.includes(id)) {
+      el.value = '';
+      el.placeholder = s[id] ? 'gesetzt - unverändert lassen' : 'noch kein Passwort gesetzt';
+    } else {
+      el.value = s[id] != null ? s[id] : '';
+    }
+  }
+}
+
+function collectPayload() {
+  const payload = {};
+  for (const id of FIELD_IDS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (BOOL_IDS.includes(id)) {
+      payload[id] = el.checked;
+    } else if (el.type === 'number') {
+      payload[id] = el.value === '' ? null : Number(el.value);
+    } else {
+      payload[id] = el.value;
+    }
+  }
+  return payload;
+}
+
+async function saveSettings() {
+  const statusEl = document.getElementById('save-status');
+  statusEl.textContent = 'Speichere...';
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collectPayload()),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    statusEl.innerHTML = '<span class="badge ok">Gespeichert</span>';
+    await loadSettings();
+  } catch (e) {
+    statusEl.innerHTML = '<span class="badge fail">Fehler: ' + e.message + '</span>';
+  }
+  setTimeout(() => { statusEl.textContent = ''; }, 4000);
+}
+
+async function testConnection() {
+  const statusEl = document.getElementById('test-status');
+  statusEl.textContent = 'Teste Verbindung...';
+  const payload = {
+    unifi_controller_url: document.getElementById('unifi_controller_url').value,
+    unifi_username: document.getElementById('unifi_username').value,
+    unifi_password: document.getElementById('unifi_password').value,
+    unifi_site: document.getElementById('unifi_site').value,
+    unifi_verify_ssl: document.getElementById('unifi_verify_ssl').checked,
+  };
+  try {
+    const res = await fetch('/api/settings/unifi/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const result = await res.json();
+    statusEl.innerHTML = result.success
+      ? '<span class="badge ok">' + result.message + '</span>'
+      : '<span class="badge fail">' + result.message + '</span>';
+  } catch (e) {
+    statusEl.innerHTML = '<span class="badge fail">Fehler: ' + e.message + '</span>';
+  }
+}
+
+async function loadDevices() {
+  const res = await fetch('/api/unifi/devices');
+  const devices = await res.json();
+  const tbody = document.querySelector('#device-table tbody');
+  if (devices.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">Noch keine UniFi-Geräte erkannt. Integration aktivieren, Zugangsdaten speichern und kurz warten.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = '';
+  for (const d of devices) {
+    const tr = document.createElement('tr');
+    const options = ['<option value="">– nicht zugeordnet –</option>']
+      .concat(['Keller', 'EG', '1.OG', '2.OG'].map(f => `<option value="${f}" ${d.floor === f ? 'selected' : ''}>${f}</option>`));
+    const autoTag = d.floor && d.floor_source === 'auto'
+      ? '<span style="font-size:11px; color:var(--text-muted); margin-left:6px;">automatisch</span>' : '';
+    tr.innerHTML = `
+      <td>${d.device_name || d.device_mac}</td>
+      <td style="font-variant-numeric: tabular-nums;">${d.ip || '–'}</td>
+      <td>${TYPE_LABELS[d.device_type] || d.device_type || '–'}</td>
+      <td>${d.model || '–'}</td>
+      <td>
+        <select data-mac="${d.device_mac}">${options.join('')}</select>${autoTag}
+        <span class="row-saved" style="display:none;">gespeichert</span>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll('select').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const mac = sel.dataset.mac;
+      await fetch('/api/unifi/floor-map', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [mac]: sel.value || null }),
+      });
+      const marker = sel.parentElement.querySelector('.row-saved');
+      marker.style.display = 'inline';
+      setTimeout(() => { marker.style.display = 'none'; }, 2000);
+    });
+  });
+}
+
+async function testMail() {
+  const statusEl = document.getElementById('mail-test-status');
+  statusEl.textContent = 'Sende Test-Mail...';
+  const payload = {
+    mail_smtp_host: document.getElementById('mail_smtp_host').value,
+    mail_smtp_port: Number(document.getElementById('mail_smtp_port').value) || null,
+    mail_use_tls: document.getElementById('mail_use_tls').checked,
+    mail_username: document.getElementById('mail_username').value,
+    mail_password: document.getElementById('mail_password').value,
+    mail_from: document.getElementById('mail_from').value,
+    mail_to: document.getElementById('mail_to').value,
+  };
+  try {
+    const res = await fetch('/api/settings/mail/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const result = await res.json();
+    statusEl.innerHTML = result.success
+      ? '<span class="badge ok">' + result.message + '</span>'
+      : '<span class="badge fail">' + result.message + '</span>';
+  } catch (e) {
+    statusEl.innerHTML = '<span class="badge fail">Fehler: ' + e.message + '</span>';
+  }
+}
+
+document.getElementById('save-btn').addEventListener('click', saveSettings);
+document.getElementById('test-btn').addEventListener('click', testConnection);
+document.getElementById('mail-test-btn').addEventListener('click', testMail);
+
+loadSettings();
+loadDevices();
+setInterval(loadDevices, 15000);
+</script>
+
+</body>
+</html>
