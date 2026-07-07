@@ -1,7 +1,6 @@
 # NightmareCatcher
 
-Ein Werkzeug, um gelegentlichen Lags/Rucklern beim IP-TV und sporadischen
-Verbindungsabbrüchen in Butler21 auf den Grund zu gehen. Läuft verteilt: ein
+Ein Werkzeug, um gelegentlichen Lags/Rucklern auf den Grund zu gehen. Läuft verteilt: ein
 leichter **Agent** auf jedem PC/Notebook misst laufend Ping/Jitter/Paketverlust
 zu Router, Etagen-Switch und Internet und meldet das an einen zentralen
 **Server**. Der Server fragt zusätzlich den lokalen **UniFi-Controller** ab
