@@ -174,8 +174,14 @@ const CATEGORY_LABELS = {
   wan_latency: 'Internet-Latenz', wan_status: 'WAN-Status',
   ping_timeout: 'Ping-Ausfall', ping_latency: 'Ping-Latenz',
   controller_log: 'UniFi-Log', controller_alarm: 'UniFi-Alarm',
+  device_renamed: 'Namensänderung',
 };
 const SOURCE_LABELS = { unifi: 'UniFi', agent: 'Agent', server: 'Server' };
+const SEVERITY_BADGES = {
+  critical: ['critical', 'Kritisch'],
+  warning: ['warning', 'Warnung'],
+  info: ['ok', 'Info'],
+};
 
 function fmtTime(ts) {
   const d = new Date(ts * 1000);
@@ -368,7 +374,7 @@ async function refreshEvents() {
     <div class="event-row">
       <div class="event-time">${fmtTime(e.ts)}</div>
       <div class="event-msg">
-        <span class="badge level-${e.severity === 'critical' ? 'critical' : 'warning'}">${e.severity === 'critical' ? 'Kritisch' : 'Warnung'}</span>
+        <span class="badge level-${(SEVERITY_BADGES[e.severity] || SEVERITY_BADGES.warning)[0]}">${(SEVERITY_BADGES[e.severity] || SEVERITY_BADGES.warning)[1]}</span>
         <span class="source-tag">${SOURCE_LABELS[e.source] || e.source} · ${CATEGORY_LABELS[e.category] || e.category}${e.floor ? ' · ' + e.floor : ''}</span>
         <div>${e.message}</div>
         ${e.related.length > 0 ? `<div class="event-related">Zeitgleich: ${e.related.map(r => r.message).join(' · ')}</div>` : ''}

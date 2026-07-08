@@ -23,7 +23,10 @@ CATEGORY_LABELS = {
     "ping_latency": "Ping-Latenz",
     "controller_log": "UniFi-Log",
     "controller_alarm": "UniFi-Alarm",
+    "device_renamed": "Namensänderung",
 }
+
+SEVERITY_LABELS = {"critical": "KRITISCH", "warning": "Warnung", "info": "Hinweis"}
 
 
 def _fmt(ts: float) -> str:
@@ -44,7 +47,8 @@ def build_report(events: list[dict], since_ts: float, now_ts: float) -> tuple[st
         return subject, body
 
     critical = sum(1 for e in events if e["severity"] == "critical")
-    warnings = len(events) - critical
+    infos = sum(1 for e in events if e["severity"] == "info")
+    warnings = len(events) - critical - infos
 
     by_device: dict[str, list[dict]] = defaultdict(list)
     for e in events:
@@ -54,7 +58,8 @@ def build_report(events: list[dict], since_ts: float, now_ts: float) -> tuple[st
         "NightmareCatcher - Bericht",
         f"Zeitraum: {period}",
         "",
-        f"Zusammenfassung: {len(events)} Auffälligkeit(en), davon {critical} kritisch, {warnings} Warnung(en).",
+        f"Zusammenfassung: {len(events)} Auffälligkeit(en), davon {critical} kritisch, "
+        f"{warnings} Warnung(en), {infos} Hinweis(e).",
         "",
         "Beteiligte Geräte (sortiert nach Häufigkeit):",
     ]
@@ -68,7 +73,7 @@ def build_report(events: list[dict], since_ts: float, now_ts: float) -> tuple[st
 
     lines += ["", "Ereignisse im Detail (neueste zuerst, max. 30):"]
     for e in sorted(events, key=lambda x: x["ts"], reverse=True)[:30]:
-        sev = "KRITISCH" if e["severity"] == "critical" else "Warnung"
+        sev = SEVERITY_LABELS.get(e["severity"], "Warnung")
         lines.append(f"  {_fmt(e['ts'])} [{sev}] {e['message']}")
 
     if len(events) > 30:

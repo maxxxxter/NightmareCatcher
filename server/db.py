@@ -205,6 +205,18 @@ def latest_unifi_snapshots() -> list[dict]:
     return result
 
 
+def latest_device_names() -> dict[str, str]:
+    """Zuletzt bekannter Name je UniFi-Gerät (MAC) - für die Erkennung von
+    Umbenennungen auch über Server-Neustarts hinweg."""
+    with _lock:
+        rows = _conn.execute(
+            """SELECT s.device_mac, s.device_name FROM unifi_snapshots s
+               JOIN (SELECT device_mac, MAX(ts) AS max_ts FROM unifi_snapshots GROUP BY device_mac) latest
+               ON s.device_mac = latest.device_mac AND s.ts = latest.max_ts"""
+        ).fetchall()
+    return {r["device_mac"]: r["device_name"] for r in rows if r["device_name"]}
+
+
 def prune(now: float) -> None:
     """Alte Daten entfernen, damit die Datenbank nicht unbegrenzt wächst.
     UniFi-Snapshots (große Roh-JSONs, nur der jeweils letzte wird angezeigt): 24 h.

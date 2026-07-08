@@ -37,6 +37,8 @@ _throughput_history: deque = deque(maxlen=200)
 _gateway_health: dict = {}
 _ping_samples: dict[str, deque] = {}
 _seen_log_ids: set[str] = set()
+_last_device_names: dict[str, str] = {}
+_device_names_loaded = False
 
 GATEWAY_TYPES = ("ugw", "udm", "uxg")
 
@@ -243,6 +245,30 @@ def _check_health(health: list[dict], s: dict, now: float) -> None:
     })
 
 
+def _handle_rename(mac: str, old_name: str, new_name: str,
+                   floor_entries: dict, now: float) -> None:
+    """Übernimmt eine im UniFi-Controller erfolgte Umbenennung in die App:
+    protokolliert die Änderung und aktualisiert eine automatisch erratene
+    Stockwerk-Zuordnung anhand des neuen Namens. Manuelle Zuordnungen bleiben
+    grundsätzlich unangetastet."""
+    entry = floor_entries.get(mac)
+    floor_note = ""
+    if entry and entry.get("source") == "auto":
+        guessed = guess_floor(new_name)
+        if guessed and guessed != entry.get("floor"):
+            db.set_device_floor(mac, guessed, source="auto")
+            entry["floor"] = guessed
+            floor_note = f" - Stockwerk-Zuordnung automatisch auf {guessed} aktualisiert"
+
+    db.insert_event(
+        now, "unifi", "info", "device_renamed", new_name,
+        (entry or {}).get("floor") or None,
+        f"Gerät umbenannt: '{old_name}' → '{new_name}'{floor_note}",
+        {"mac": mac, "old_name": old_name},
+    )
+    log.info("UniFi-Gerät umbenannt: '%s' -> '%s'%s", old_name, new_name, floor_note)
+
+
 def _scan_controller_logs(ctrl_events: list[dict], alarms: list[dict], now: float) -> None:
     """Durchsucht Controller-Logs und Alarme nach möglichen Fehlerquellen und
     übernimmt Treffer in die Ereignis-Zeitleiste (dedupliziert per Log-ID)."""
@@ -290,11 +316,24 @@ async def unifi_poll_loop() -> None:
             floor_entries = db.get_floor_entries()
             cooldown = s["event_cooldown_seconds"]
 
+            # Zuletzt bekannte Namen einmalig aus der Datenbank laden, damit
+            # Umbenennungen auch nach einem Server-Neustart erkannt werden.
+            global _device_names_loaded
+            if not _device_names_loaded:
+                _last_device_names.update(db.latest_device_names())
+                _device_names_loaded = True
+
             for dev in devices:
                 mac = dev.get("mac", "unknown")
                 name = dev.get("name") or dev.get("model") or mac
                 dtype = dev.get("type")
                 state = dev.get("state")
+
+                # Umbenennung im UniFi-Controller erkennen und übernehmen
+                old_name = _last_device_names.get(mac)
+                if old_name is not None and old_name != name:
+                    _handle_rename(mac, old_name, name, floor_entries, now)
+                _last_device_names[mac] = name
 
                 # Automatische Stockwerk-Zuordnung aus dem Gerätenamen -
                 # nur solange keine (auch bewusst leere) manuelle Zuordnung existiert.
