@@ -74,6 +74,7 @@
     background: var(--bg); color: var(--text); }
   .empty { color: var(--text-muted); padding: 8px 0; }
   .row-saved { color: var(--ok); font-size: 12px; margin-left: 8px; }
+  .rec { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 </style>
 </head>
 <body>
@@ -122,6 +123,27 @@
   <div class="actions">
     <button id="test-btn" type="button">Verbindung testen</button>
     <span id="test-status"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Überwachung</h2>
+  <p class="hint">Einzelne Messbereiche lassen sich hier von der Ereignis-Erzeugung ausnehmen. Die Messung und Anzeige im Dashboard läuft dabei weiter &ndash; es werden nur keine Warnungen mehr ausgelöst (auch nicht im Mail-Bericht).</p>
+  <div class="field-grid">
+    <div><label for="monitor_ping">Dauerping (Server)</label>
+      <div class="checkbox-row"><input type="checkbox" id="monitor_ping"><span>Latenzspitzen/Timeouts melden</span></div></div>
+    <div><label for="monitor_agents">Agenten (PCs/Notebooks)</label>
+      <div class="checkbox-row"><input type="checkbox" id="monitor_agents"><span>Paketverlust/Jitter der Agenten melden</span></div></div>
+    <div><label for="monitor_ports">Switch-Ports &amp; Geräte</label>
+      <div class="checkbox-row"><input type="checkbox" id="monitor_ports"><span>Port-Fehler und Geräte-Ausfälle melden</span></div></div>
+    <div><label for="monitor_wifi">WLAN-Access-Points</label>
+      <div class="checkbox-row"><input type="checkbox" id="monitor_wifi"><span>Funk-Qualität und Kanalauslastung melden</span></div></div>
+    <div><label for="monitor_gateway">Router (UDM)</label>
+      <div class="checkbox-row"><input type="checkbox" id="monitor_gateway"><span>CPU/Speicher/Temperatur/Neustarts melden</span></div></div>
+    <div><label for="monitor_wan">Internet/WAN</label>
+      <div class="checkbox-row"><input type="checkbox" id="monitor_wan"><span>Internet-Latenz und WAN-Status melden</span></div></div>
+    <div><label for="monitor_controller_logs">UniFi-Logs</label>
+      <div class="checkbox-row"><input type="checkbox" id="monitor_controller_logs"><span>Controller-Logs nach Fehlerquellen durchsuchen</span></div></div>
   </div>
 </div>
 
@@ -228,15 +250,40 @@ const FIELD_IDS = [
   'ping_local_warn_ms', 'ping_local_crit_ms', 'ping_internet_warn_ms', 'ping_internet_crit_ms',
   'mail_enabled', 'mail_smtp_host', 'mail_smtp_port', 'mail_use_tls',
   'mail_username', 'mail_password', 'mail_from', 'mail_to', 'mail_report_interval_hours',
+  'monitor_ping', 'monitor_agents', 'monitor_ports', 'monitor_wifi',
+  'monitor_gateway', 'monitor_wan', 'monitor_controller_logs',
 ];
-const BOOL_IDS = ['unifi_enabled', 'unifi_verify_ssl', 'mail_enabled', 'mail_use_tls'];
+const BOOL_IDS = ['unifi_enabled', 'unifi_verify_ssl', 'mail_enabled', 'mail_use_tls',
+  'monitor_ping', 'monitor_agents', 'monitor_ports', 'monitor_wifi',
+  'monitor_gateway', 'monitor_wan', 'monitor_controller_logs'];
 const SECRET_IDS = ['unifi_password', 'mail_password'];
+
+async function showRecommended() {
+  const res = await fetch('/api/settings/defaults');
+  const rec = await res.json();
+  for (const id of FIELD_IDS) {
+    if (BOOL_IDS.includes(id) || SECRET_IDS.includes(id)) continue;
+    const el = document.getElementById(id);
+    if (!el || rec[id] == null || rec[id] === '') continue;
+    let hint = el.parentElement.querySelector('.rec');
+    if (!hint) {
+      hint = document.createElement('div');
+      hint.className = 'rec';
+      el.insertAdjacentElement('afterend', hint);
+    }
+    hint.textContent = 'Empfohlen: ' + rec[id];
+  }
+}
 
 const TYPE_LABELS = { usw: 'Switch', uap: 'Access Point', ugw: 'Router/Gateway', udm: 'Router/Gateway', uxg: 'Router/Gateway' };
 
+let settingsLoaded = false;
+
 async function loadSettings() {
   const res = await fetch('/api/settings');
+  if (!res.ok) throw new Error('Einstellungen konnten nicht geladen werden');
   const s = await res.json();
+  settingsLoaded = true;
   for (const id of FIELD_IDS) {
     const el = document.getElementById(id);
     if (!el) continue;
@@ -269,6 +316,10 @@ function collectPayload() {
 
 async function saveSettings() {
   const statusEl = document.getElementById('save-status');
+  if (!settingsLoaded) {
+    statusEl.innerHTML = '<span class="badge fail">Einstellungen noch nicht geladen - Seite neu laden und erneut versuchen.</span>';
+    return;
+  }
   statusEl.textContent = 'Speichere...';
   try {
     const res = await fetch('/api/settings', {
@@ -384,6 +435,7 @@ document.getElementById('test-btn').addEventListener('click', testConnection);
 document.getElementById('mail-test-btn').addEventListener('click', testMail);
 
 loadSettings();
+showRecommended();
 loadDevices();
 setInterval(loadDevices, 15000);
 </script>

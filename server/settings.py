@@ -61,9 +61,45 @@ DEFAULTS: dict = {
     "mail_from": "",
     "mail_to": "marc@radler.org",
     "mail_report_interval_hours": 24,
+
+    "monitor_ping": True,
+    "monitor_agents": True,
+    "monitor_ports": True,
+    "monitor_wifi": True,
+    "monitor_gateway": True,
+    "monitor_wan": True,
+    "monitor_controller_logs": True,
 }
 
 SECRET_KEYS = {"unifi_password", "mail_password"}
+
+# Schlüssel, deren Wert bei einem Update auf die neue Empfehlung aktualisiert
+# werden darf, wenn er nie manuell geändert wurde. Verbindungs- und
+# Identitätsdaten (UniFi, Mail) stehen bewusst NICHT hier - sie stammen vom
+# Nutzer und dürfen nie automatisch überschrieben werden.
+THRESHOLD_KEYS = {
+    "loss_percent_warn", "loss_percent_crit", "jitter_ms_warn", "jitter_ms_crit",
+    "unifi_port_error_delta_warn", "correlation_window_seconds", "stale_after_seconds",
+    "event_cooldown_seconds",
+    "wifi_satisfaction_warn", "wifi_satisfaction_crit", "wifi_cu_warn", "wifi_cu_crit",
+    "gw_cpu_warn", "gw_cpu_crit", "gw_mem_warn", "gw_mem_crit",
+    "gw_temp_warn", "gw_temp_crit", "wan_latency_ms_warn", "wan_latency_ms_crit",
+    "ping_local_warn_ms", "ping_local_crit_ms", "ping_internet_warn_ms", "ping_internet_crit_ms",
+    "server_ping_interval_seconds", "unifi_poll_interval_seconds",
+}
+
+# Merkliste der manuell (über die GUI) geänderten Schlüssel. Nur Werte, die
+# hier NICHT drinstehen, folgen bei App-Updates automatisch der jeweils
+# aktuellen Empfehlung.
+_MODIFIED_KEY = "_user_modified_keys"
+
+
+def _get_modified() -> set:
+    return set(db.get_setting(_MODIFIED_KEY, []))
+
+
+def _save_modified(modified: set) -> None:
+    db.set_setting(_MODIFIED_KEY, sorted(modified))
 
 
 def seed_from_bootstrap(cfg: Config) -> None:
@@ -88,6 +124,28 @@ def seed_from_bootstrap(cfg: Config) -> None:
         if not db.has_setting(key):
             db.set_setting(key, seed.get(key, default))
 
+    # Einmalige Migration für Bestands-Datenbanken: alles außer Schwellwerten,
+    # das von der Empfehlung abweicht, gilt als bewusst gesetzt (z.B. per
+    # config.yaml eingespielte Zugangsdaten) und wird geschützt.
+    if not db.has_setting(_MODIFIED_KEY):
+        modified = set()
+        for key, default in DEFAULTS.items():
+            if key in THRESHOLD_KEYS:
+                continue
+            if db.get_setting(key, default) != default:
+                modified.add(key)
+        _save_modified(modified)
+
+    # Nicht manuell geänderte Werte folgen automatisch der aktuellen Empfehlung -
+    # so bleiben z.B. die Ping-Ziele und Schwellwerte nach Updates auf dem
+    # empfohlenen Stand, solange der Nutzer sie nie selbst angefasst hat.
+    modified = _get_modified()
+    for key, default in DEFAULTS.items():
+        if key in modified:
+            continue
+        if db.get_setting(key, default) != default:
+            db.set_setting(key, default)
+
 
 def get_all(mask_secrets: bool = True) -> dict:
     result = {key: db.get_setting(key, default) for key, default in DEFAULTS.items()}
@@ -97,10 +155,33 @@ def get_all(mask_secrets: bool = True) -> dict:
     return result
 
 
+def get_recommended() -> dict:
+    """Empfohlene Werte für die Anzeige unter den Eingabefeldern (ohne Secrets)."""
+    return {key: value for key, value in DEFAULTS.items() if key not in SECRET_KEYS}
+
+
 def update(partial: dict) -> None:
+    modified = _get_modified()
     for key, value in partial.items():
         if key not in DEFAULTS:
             continue
+        default = DEFAULTS[key]
         if key in SECRET_KEYS and (value is None or value == ""):
             continue  # leeres Passwort-Feld überschreibt das gespeicherte Passwort nicht
+        # Leere Eingaben überschreiben nie eine sinnvolle Voreinstellung: ein
+        # leer gelassenes Zahlenfeld (None) oder ein geleertes Textfeld, für das
+        # eine Empfehlung existiert, wird ignoriert. So können z.B. die
+        # Ping-Ziele nicht versehentlich durch Speichern einer halb geladenen
+        # Seite gelöscht werden.
+        if value is None and not isinstance(default, str):
+            continue
+        if value == "" and default != "":
+            continue
         db.set_setting(key, value)
+        # Wert entspricht wieder der Empfehlung -> folgt künftigen Updates;
+        # abweichender Wert -> dauerhaft geschützt.
+        if value == DEFAULTS[key]:
+            modified.discard(key)
+        else:
+            modified.add(key)
+    _save_modified(modified)

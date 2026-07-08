@@ -155,9 +155,11 @@ def _grade(value, warn, crit, higher_is_bad: bool = True) -> str:
     return "ok"
 
 
-def _check_gateway(dev: dict, s: dict, now: float, floor: Optional[str]) -> None:
+def _check_gateway(dev: dict, s: dict, now: float, floor: Optional[str], alerts: bool = True) -> None:
     """Prüft die UDM/das Gateway auf Zustände, die Latenzen erklären können:
-    CPU-/Speicher-Überlastung, Übertemperatur, kürzlicher Neustart."""
+    CPU-/Speicher-Überlastung, Übertemperatur, kürzlicher Neustart.
+    Bei alerts=False werden die Werte fürs Dashboard weiter erfasst,
+    aber keine Ereignisse erzeugt (Überwachung deaktiviert)."""
     name = dev.get("name") or dev.get("model") or dev.get("mac", "Gateway")
     mac = dev.get("mac", "gateway")
     cooldown = s["event_cooldown_seconds"]
@@ -188,14 +190,14 @@ def _check_gateway(dev: dict, s: dict, now: float, floor: Optional[str]) -> None
     for key, value, warn, crit, label, unit in checks:
         level = _grade(value, warn, crit)
         levels[key] = level
-        if level in ("warning", "critical") and _should_fire((mac, f"gw_{key}"), cooldown):
+        if alerts and level in ("warning", "critical") and _should_fire((mac, f"gw_{key}"), cooldown):
             db.insert_event(
                 now, "unifi", level, "gateway_load", name, floor,
                 f"Router '{name}': {label} bei {value}{unit} - kann Latenzen/Ruckler verursachen",
                 {key: value},
             )
 
-    if uptime is not None and uptime < s["unifi_poll_interval_seconds"] * 3:
+    if alerts and uptime is not None and uptime < s["unifi_poll_interval_seconds"] * 3:
         if _should_fire((mac, "gw_reboot"), cooldown):
             db.insert_event(
                 now, "unifi", "critical", "gateway_reboot", name, floor,
@@ -210,9 +212,10 @@ def _check_gateway(dev: dict, s: dict, now: float, floor: Optional[str]) -> None
     })
 
 
-def _check_health(health: list[dict], s: dict, now: float) -> None:
+def _check_health(health: list[dict], s: dict, now: float, alerts: bool = True) -> None:
     """Wertet den Controller-Gesundheitsstatus aus: vom Gateway gemessene
-    Internet-Latenz und Status der WAN-/Internet-Subsysteme."""
+    Internet-Latenz und Status der WAN-/Internet-Subsysteme.
+    Bei alerts=False nur Anzeige-Aktualisierung, keine Ereignisse."""
     cooldown = s["event_cooldown_seconds"]
     www = next((h for h in health if h.get("subsystem") == "www"), None)
     wan = next((h for h in health if h.get("subsystem") == "wan"), None)
@@ -222,7 +225,7 @@ def _check_health(health: list[dict], s: dict, now: float) -> None:
     www_status = www.get("status") if www else None
 
     latency_level = _grade(latency, s["wan_latency_ms_warn"], s["wan_latency_ms_crit"])
-    if latency_level in ("warning", "critical") and _should_fire(("health", "wan_latency"), cooldown):
+    if alerts and latency_level in ("warning", "critical") and _should_fire(("health", "wan_latency"), cooldown):
         db.insert_event(
             now, "unifi", latency_level, "wan_latency", "Gateway", None,
             f"Internet-Latenz am Gateway erhöht: {latency} ms "
@@ -231,7 +234,7 @@ def _check_health(health: list[dict], s: dict, now: float) -> None:
         )
 
     for label, status_value in (("WAN", wan_status), ("Internet", www_status)):
-        if status_value and status_value not in ("ok", "unknown") and \
+        if alerts and status_value and status_value not in ("ok", "unknown") and \
                 _should_fire(("health", f"status_{label}"), cooldown):
             db.insert_event(
                 now, "unifi", "critical", "wan_status", "Gateway", None,
@@ -347,7 +350,7 @@ async def unifi_poll_loop() -> None:
 
                 db.insert_unifi_snapshot(now, mac, name, dtype, state, dev)
 
-                if state is not None and state != 1:
+                if state is not None and state != 1 and s["monitor_ports"]:
                     if _should_fire((mac, "device_offline"), cooldown):
                         db.insert_event(
                             now, "unifi", "critical", "device_offline", name, floor,
@@ -372,7 +375,8 @@ async def unifi_poll_loop() -> None:
                         continue
                     d_err = (rx_err - prev["rx_errors"]) + (tx_err - prev["tx_errors"])
                     d_drop = (rx_drop - prev["rx_dropped"]) + (tx_drop - prev["tx_dropped"])
-                    if d_err >= s["unifi_port_error_delta_warn"] or d_drop >= s["unifi_port_error_delta_warn"]:
+                    if (d_err >= s["unifi_port_error_delta_warn"] or d_drop >= s["unifi_port_error_delta_warn"]) \
+                            and s["monitor_ports"]:
                         db.insert_event(
                             now, "unifi", "warning", "port_errors", name, floor,
                             f"Port {port.get('port_idx')} an '{name}': +{d_err} Fehler, +{d_drop} Drops "
@@ -382,10 +386,10 @@ async def unifi_poll_loop() -> None:
 
                 # Router/UDM: Systemlast, Temperatur, Neustarts
                 if dtype in GATEWAY_TYPES:
-                    _check_gateway(dev, s, now, floor)
+                    _check_gateway(dev, s, now, floor, alerts=s["monitor_gateway"])
 
                 # WLAN-Access-Points: Funk-Qualität und Kanalauslastung je Band
-                if dtype == "uap":
+                if dtype == "uap" and s["monitor_wifi"]:
                     for radio in (dev.get("radio_table_stats") or []):
                         radio_name = radio.get("name") or radio.get("radio") or "?"
                         satisfaction = radio.get("satisfaction")
@@ -424,16 +428,17 @@ async def unifi_poll_loop() -> None:
                                 )
             try:
                 health = await client.get_health()
-                _check_health(health, s, now)
+                _check_health(health, s, now, alerts=s["monitor_wan"])
             except Exception as e:
                 log.debug("Health-Abfrage fehlgeschlagen: %s", e)
 
-            try:
-                ctrl_events = await client.get_events(limit=100)
-                alarms = await client.get_alarms()
-                _scan_controller_logs(ctrl_events, alarms, now)
-            except Exception as e:
-                log.debug("Log-/Alarm-Abfrage fehlgeschlagen: %s", e)
+            if s["monitor_controller_logs"]:
+                try:
+                    ctrl_events = await client.get_events(limit=100)
+                    alarms = await client.get_alarms()
+                    _scan_controller_logs(ctrl_events, alarms, now)
+                except Exception as e:
+                    log.debug("Log-/Alarm-Abfrage fehlgeschlagen: %s", e)
         except Exception as e:
             log.warning("UniFi-Abfrage fehlgeschlagen: %s", e)
 
@@ -482,6 +487,8 @@ async def server_ping_loop() -> None:
         for (label, ip, warn, crit), rtt in zip(targets, results):
             dq = _ping_samples.setdefault(label, deque(maxlen=150))
             dq.append({"ts": now, "rtt": rtt})
+            if not s["monitor_ping"]:
+                continue  # Messung/Anzeige läuft weiter, nur keine Ereignisse
             if rtt is None:
                 if _should_fire(("srvping", label, "timeout"), cooldown):
                     db.insert_event(
@@ -565,11 +572,12 @@ async def report(payload: ReportIn) -> dict:
             m.sent, m.received, loss, m.avg_latency_ms, m.jitter_ms,
             payload.connection_type, payload.wlan_signal_percent, payload.wlan_channel,
         )
-    for e in payload.events:
-        db.insert_event(
-            payload.ts, "agent", e.severity, e.category, payload.device_name, payload.floor,
-            e.message, e.detail,
-        )
+    if settings.get_all(mask_secrets=False)["monitor_agents"]:
+        for e in payload.events:
+            db.insert_event(
+                payload.ts, "agent", e.severity, e.category, payload.device_name, payload.floor,
+                e.message, e.detail,
+            )
     return {"status": "ok"}
 
 
@@ -678,6 +686,11 @@ async def floors() -> list[str]:
 @app.get("/api/settings")
 async def get_settings() -> dict:
     return settings.get_all(mask_secrets=True)
+
+
+@app.get("/api/settings/defaults")
+async def get_settings_defaults() -> dict:
+    return settings.get_recommended()
 
 
 @app.put("/api/settings")
