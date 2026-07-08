@@ -272,9 +272,16 @@ def _handle_rename(mac: str, old_name: str, new_name: str,
     log.info("UniFi-Gerät umbenannt: '%s' -> '%s'%s", old_name, new_name, floor_note)
 
 
-def _scan_controller_logs(ctrl_events: list[dict], alarms: list[dict], now: float) -> None:
+WIFI_LOG_HINTS = ("radar", "dfs", "channel", "wireless", "wlan", "roam")
+
+
+def _scan_controller_logs(ctrl_events: list[dict], alarms: list[dict], now: float,
+                          include_wifi: bool = True) -> None:
     """Durchsucht Controller-Logs und Alarme nach möglichen Fehlerquellen und
-    übernimmt Treffer in die Ereignis-Zeitleiste (dedupliziert per Log-ID)."""
+    übernimmt Treffer in die Ereignis-Zeitleiste (dedupliziert per Log-ID).
+    Bei include_wifi=False werden WLAN-bezogene Einträge (Radar/DFS,
+    Kanalwechsel, AP-Meldungen) übersprungen - so ist der WLAN-Schalter
+    in den Einstellungen lückenlos."""
     global _seen_log_ids
     if len(_seen_log_ids) > 10000:
         _seen_log_ids = set()
@@ -288,6 +295,10 @@ def _scan_controller_logs(ctrl_events: list[dict], alarms: list[dict], now: floa
             continue
         text = f"{entry.get('key', '')} {entry.get('msg', '')}".lower()
         if category == "controller_log" and not any(kw in text for kw in LOG_KEYWORDS):
+            _seen_log_ids.add(eid)
+            continue
+        if not include_wifi and (entry.get("ap_name") or entry.get("ap")
+                                 or any(h in text for h in WIFI_LOG_HINTS)):
             _seen_log_ids.add(eid)
             continue
         _seen_log_ids.add(eid)
@@ -395,7 +406,8 @@ async def unifi_poll_loop() -> None:
                         satisfaction = radio.get("satisfaction")
                         cu_total = radio.get("cu_total")
 
-                        if satisfaction is not None:
+                        # -1 bedeutet bei UniFi "keine Daten/keine Clients", nicht "schlecht"
+                        if satisfaction is not None and satisfaction >= 0:
                             if satisfaction <= s["wifi_satisfaction_crit"] and \
                                     _should_fire((mac, radio_name, "wifi_quality"), cooldown):
                                 db.insert_event(
@@ -436,7 +448,7 @@ async def unifi_poll_loop() -> None:
                 try:
                     ctrl_events = await client.get_events(limit=100)
                     alarms = await client.get_alarms()
-                    _scan_controller_logs(ctrl_events, alarms, now)
+                    _scan_controller_logs(ctrl_events, alarms, now, include_wifi=s["monitor_wifi"])
                 except Exception as e:
                     log.debug("Log-/Alarm-Abfrage fehlgeschlagen: %s", e)
         except Exception as e:
@@ -619,6 +631,100 @@ async def gateway_health() -> dict:
     if not _gateway_health:
         return {"available": False}
     return {"available": True, **_gateway_health}
+
+
+# Welcher Überwachungs-Schalter für welche Ereignis-Kategorie zuständig ist -
+# deaktivierte Bereiche fließen nicht in die Gesamtgesundheit ein.
+CATEGORY_TOGGLE = {
+    "packet_loss": "monitor_agents", "jitter": "monitor_agents", "disconnect": "monitor_agents",
+    "port_errors": "monitor_ports", "device_offline": "monitor_ports",
+    "wifi_quality": "monitor_wifi", "wifi_congestion": "monitor_wifi",
+    "gateway_load": "monitor_gateway", "gateway_reboot": "monitor_gateway",
+    "wan_latency": "monitor_wan", "wan_status": "monitor_wan",
+    "ping_timeout": "monitor_ping", "ping_latency": "monitor_ping",
+    "controller_log": "monitor_controller_logs", "controller_alarm": "monitor_controller_logs",
+}
+
+_LEVEL_ORDER = {"ok": 0, "warning": 1, "critical": 2}
+
+
+@app.get("/api/health-summary")
+async def health_summary() -> dict:
+    """Gesamtgesundheit des Netzwerks für die Ampel im Dashboard: schlechtester
+    Zustand über alle aktuell überwachten Parameter (Live-Werte plus die
+    Ereignisse der letzten 15 Minuten)."""
+    s = settings.get_all(mask_secrets=False)
+    now = time.time()
+    worst = "ok"
+    reasons: list[str] = []
+
+    def bump(level: str, reason: str) -> None:
+        nonlocal worst
+        if level not in ("warning", "critical"):
+            return
+        reasons.append(reason)
+        if _LEVEL_ORDER[level] > _LEVEL_ORDER[worst]:
+            worst = level
+
+    agents = db.device_status(
+        stale_after_seconds=s["stale_after_seconds"],
+        loss_warn=s["loss_percent_warn"], loss_crit=s["loss_percent_crit"],
+        jitter_warn=s["jitter_ms_warn"], jitter_crit=s["jitter_ms_crit"],
+    )
+    if s["monitor_agents"]:
+        for d in agents:
+            if d["level"] in ("warning", "critical"):
+                bump(d["level"], f"{d['device_name']}: {d['target_label']} auffällig")
+
+    if s["monitor_ping"]:
+        ping_meta = {
+            "Gateway": (s["ping_local_warn_ms"], s["ping_local_crit_ms"]),
+            "Internet": (s["ping_internet_warn_ms"], s["ping_internet_crit_ms"]),
+        }
+        for label, (warn, crit) in ping_meta.items():
+            samples = _ping_samples.get(label)
+            if not samples:
+                continue
+            current = samples[-1]["rtt"]
+            if current is None:
+                bump("critical", f"Dauerping {label}: keine Antwort")
+            else:
+                bump(_grade(current, warn, crit), f"Dauerping {label}: {current:.0f} ms")
+
+    levels = _gateway_health.get("levels", {})
+    if s["monitor_gateway"]:
+        for key, label in (("cpu", "Router-CPU"), ("mem", "Router-Speicher"), ("temp", "Router-Temperatur")):
+            bump(levels.get(key, "ok") if levels.get(key) in _LEVEL_ORDER else "ok", f"{label} erhöht")
+    if s["monitor_wan"]:
+        if levels.get("wan_latency") in ("warning", "critical"):
+            bump(levels["wan_latency"], "Internet-Latenz am Gateway erhöht")
+        wan_status = _gateway_health.get("wan_status")
+        if wan_status and wan_status not in ("ok", "unknown"):
+            bump("critical", f"WAN-Status: {wan_status}")
+
+    unifi_devices_list = db.latest_unifi_snapshots()
+    if s["monitor_ports"]:
+        for d in unifi_devices_list:
+            if d["state"] is not None and d["state"] != 1 and now - d["ts"] < 300:
+                bump("critical", f"UniFi-Gerät offline: {d['device_name']}")
+
+    for e in db.events_since(now - 900):
+        toggle = CATEGORY_TOGGLE.get(e["category"])
+        if toggle and not s.get(toggle, True):
+            continue
+        if e["severity"] in ("warning", "critical"):
+            bump(e["severity"], e["message"][:90])
+
+    seen: set[str] = set()
+    unique_reasons = [r for r in reasons if not (r in seen or seen.add(r))]
+
+    has_data = bool(agents) or bool(_gateway_health) or bool(unifi_devices_list) \
+        or any(_ping_samples.values())
+    return {
+        "level": worst if has_data else "unknown",
+        "reasons": unique_reasons[:6],
+        "ts": now,
+    }
 
 
 @app.get("/api/server-pings")

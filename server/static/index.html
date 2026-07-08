@@ -92,6 +92,19 @@
   .metric.m-warning .value { color: var(--warn); }
   .metric.m-critical .value { color: var(--crit); }
   .metric.m-unknown .value { color: var(--text-muted); }
+  .ampel-gehaeuse {
+    background: #17181d;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 10px 9px;
+    display: inline-flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ampel-licht { width: 26px; height: 26px; border-radius: 50%; background: var(--gauge-track); transition: background 0.4s; }
+  .ampel-licht.an-rot { background: var(--crit); }
+  .ampel-licht.an-gelb { background: var(--warn); }
+  .ampel-licht.an-gruen { background: var(--ok); }
 </style>
 </head>
 <body>
@@ -130,6 +143,16 @@
         </svg>
         <div class="gauge-value" id="gauge-up-value">– Mbit/s</div>
         <div class="gauge-label">Upload</div>
+      </div>
+      <div class="gauge-block" style="width:170px; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; padding-top:6px;">
+        <div class="ampel-gehaeuse">
+          <div class="ampel-licht" id="ampel-rot"></div>
+          <div class="ampel-licht" id="ampel-gelb"></div>
+          <div class="ampel-licht" id="ampel-gruen"></div>
+        </div>
+        <div class="gauge-value" id="ampel-status" style="font-size:17px;">–</div>
+        <div class="gauge-label">Netzwerk-Gesundheit</div>
+        <div id="ampel-grund" style="font-size:11px; color:var(--text-muted); margin-top:4px; max-width:170px;"></div>
       </div>
     </div>
     <p class="subtitle" id="gauge-footnote" style="text-align:center; margin: 8px 0 0;"></p>
@@ -213,6 +236,43 @@ function setGauge(arcId, valueId, mbps, maxMbps) {
   const pct = Math.max(0, Math.min(1, mbps / (maxMbps || 500)));
   arc.style.strokeDashoffset = String(circumference * (1 - pct));
   valueEl.textContent = mbps.toFixed(1) + ' Mbit/s';
+}
+
+async function refreshHealth() {
+  const res = await fetch('/api/health-summary');
+  const h = await res.json();
+  const lights = { rot: document.getElementById('ampel-rot'),
+                   gelb: document.getElementById('ampel-gelb'),
+                   gruen: document.getElementById('ampel-gruen') };
+  lights.rot.className = 'ampel-licht';
+  lights.gelb.className = 'ampel-licht';
+  lights.gruen.className = 'ampel-licht';
+  const statusEl = document.getElementById('ampel-status');
+  const grundEl = document.getElementById('ampel-grund');
+  if (h.level === 'critical') {
+    lights.rot.classList.add('an-rot');
+    statusEl.textContent = 'Kritisch';
+    statusEl.style.color = 'var(--crit)';
+  } else if (h.level === 'warning') {
+    lights.gelb.classList.add('an-gelb');
+    statusEl.textContent = 'Auffällig';
+    statusEl.style.color = 'var(--warn)';
+  } else if (h.level === 'ok') {
+    lights.gruen.classList.add('an-gruen');
+    statusEl.textContent = 'Stabil';
+    statusEl.style.color = 'var(--ok)';
+  } else {
+    statusEl.textContent = 'Keine Daten';
+    statusEl.style.color = 'var(--text-muted)';
+  }
+  if (h.reasons && h.reasons.length > 0) {
+    const more = h.reasons.length > 1 ? ` (+${h.reasons.length - 1} weitere)` : '';
+    grundEl.textContent = h.reasons[0] + more;
+    grundEl.title = h.reasons.join('\n');
+  } else {
+    grundEl.textContent = '';
+    grundEl.title = '';
+  }
 }
 
 async function refreshThroughput() {
@@ -385,7 +445,7 @@ async function refreshEvents() {
 
 async function refreshAll() {
   try {
-    await Promise.all([refreshThroughput(), refreshPings(), refreshGateway(), refreshStatus(), refreshUnifi(), refreshEvents()]);
+    await Promise.all([refreshHealth(), refreshThroughput(), refreshPings(), refreshGateway(), refreshStatus(), refreshUnifi(), refreshEvents()]);
   } catch (e) {
     console.error('Aktualisierung fehlgeschlagen', e);
   }
