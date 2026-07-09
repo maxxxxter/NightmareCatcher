@@ -7,3 +7,4 @@ netdiag.db
 build/
 *.spec
 dist/
+agent.db

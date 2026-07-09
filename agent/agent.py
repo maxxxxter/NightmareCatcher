@@ -101,11 +101,14 @@ def run_cycle(client: httpx.Client, cfg: dict, targets: list[tuple[str, str]],
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        print("Nutzung: python agent.py config.yaml")
-        sys.exit(1)
-
-    cfg = load_config(sys.argv[1])
+    if len(sys.argv) >= 2:
+        cfg = load_config(sys.argv[1])
+    else:
+        # Ohne Argument: Einstellungen aus agent.db (gepflegt über die GUI)
+        import agent_settings
+        agent_settings.init()
+        cfg = agent_settings.to_agent_cfg(agent_settings.load())
+        print("[netdiag-agent] Einstellungen aus agent.db geladen")
     a = cfg["agent"]
     targets = build_targets(cfg)
 

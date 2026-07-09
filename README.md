@@ -44,11 +44,16 @@ Fertig gebaute Programme, kein Python nötig:
   Doppelklick öffnet das Dashboard. Logausgaben landen in
   `nightmarecatcher-server.log` neben der EXE.
   (Start ohne Browserfenster: `--no-browser`, ohne Tray: `--no-tray`)
-- **Agent:** `agent\dist\NightmareCatcher-Agent.exe` — doppelklicken. Öffnet
-  das Konfigurationsfenster; beim Klick auf "Agent starten" öffnet sich
-  zusätzlich das Dashboard. Das Schließen des Fensters (X) minimiert nur in
-  das **Tray-Symbol** — der Agent misst weiter. Beenden per Rechtsklick auf
-  das Symbol → "Beenden" (oder Datei → Beenden im Fenster).
+- **Agent:** `agent\dist\NightmareCatcher-Agent.exe` — doppelklicken. Alle
+  Einstellungen (Gerätename, Stockwerk, Server-URL, Messziele, Schwellwerte)
+  werden über das Menü **"Einstellungen"** gepflegt — mit "Empfohlen:"-Hinweis
+  unter jedem Feld, wie beim Server. Gespeichert wird dauerhaft in `agent.db`
+  neben der EXE; eine vorhandene `config.yaml` wird beim ersten Start
+  automatisch importiert und als `.imported.bak` gesichert. Ändert man
+  Einstellungen bei laufender Messung, startet der Agent automatisch mit den
+  neuen Werten neu. Das Schließen des Fensters (X) minimiert nur in das
+  **Tray-Symbol** — der Agent misst weiter. Beenden per Rechtsklick auf das
+  Symbol → "Beenden" (oder Datei → Beenden im Fenster).
 
 Beide EXEs legen ihre Daten (`netdiag.db` bzw. `config.yaml`) im Ordner ab,
 aus dem sie gestartet werden. Die Datenbank bereinigt sich automatisch
@@ -103,17 +108,17 @@ pip install -r requirements.txt
 python agent_gui.py
 ```
 
-Im Fenster: Gerätename, Stockwerk (EG/1.OG/2.OG), Server-URL und Messziele
-eintragen, mit **Speichern** dauerhaft in `config.yaml` ablegen (liegt danach
-im `agent`-Verzeichnis), mit **Verbindung zum Server testen** prüfen, dann
-**Agent starten**. Die IP/URL des Servers lässt sich hier jederzeit ändern,
-ohne Dateien von Hand zu bearbeiten.
+Alle Einstellungen (Gerätename, Stockwerk Keller/EG/1.OG/2.OG, Server-URL,
+Messziele, Schwellwerte) über das Menü **"Einstellungen"** pflegen — unter
+jedem Feld steht der empfohlene Wert. Gespeichert wird dauerhaft in
+`agent.db`; eine alte `config.yaml` wird beim ersten Start automatisch
+importiert. Mit **Verbindung testen** prüfen, dann **Agent starten**.
 
 Für Dauerbetrieb ohne offenes Fenster: `agent_gui.py` per Windows-
-Aufgabenplanung beim Anmelden starten (Aktion: `pythonw.exe agent_gui.py` im
-Projektverzeichnis als Arbeitsordner) — die zuletzt gespeicherte Konfiguration
-wird automatisch geladen; "Agent starten" bleibt ein bewusster Klick, alternativ
-für vollautomatischen Start ohne GUI `agent.py config.yaml` verwenden.
+Aufgabenplanung beim Anmelden starten — die gespeicherten Einstellungen
+werden automatisch geladen. Für vollautomatischen Start ohne GUI:
+`python agent.py` (nutzt agent.db) oder `python agent.py config.yaml`
+(explizite Konfigurationsdatei).
 
 ### 3. Geräte den Stockwerken zuordnen
 
