@@ -77,7 +77,7 @@ class UnifiClient:
                 log.info("UniFi-Login erfolgreich (klassischer Controller)")
                 return
             self._block_login(
-                f"Zugangsdaten vom klassischen Controller abgelehnt (HTTP {resp2.status_code})", 120)
+                f"Zugangsdaten vom klassischen Controller abgelehnt (HTTP {resp2.status_code})", 900)
             raise UnifiLoginError(self._last_login_error)
 
         if resp.status_code == 429:
@@ -87,10 +87,14 @@ class UnifiClient:
                 "Warte einige Minuten, das Limit hebt sich von selbst auf", 300)
             raise UnifiLoginError(self._last_login_error)
 
-        # 401/403: Zugangsdaten falsch, Konto gesperrt oder Cloud-Konto ohne lokales Passwort
+        # 401/403: Zugangsdaten falsch, Konto gesperrt oder Cloud-Konto ohne lokales
+        # Passwort. Langer Backoff (15 min): häufigeres Wiederholen falscher
+        # Zugangsdaten ist zwecklos und hält sonst das Rate-Limit des Controllers
+        # dauerhaft am Leben. Nach Korrektur der Zugangsdaten in den Einstellungen
+        # wird sofort ein frischer Login versucht (neuer Client, kein Backoff).
         self._block_login(
             f"Zugangsdaten abgelehnt (HTTP {resp.status_code}). Nutzername/Passwort auf der "
-            f"Einstellungen-Seite prüfen; der Nutzer muss ein lokaler Controller-Nutzer sein", 120)
+            f"Einstellungen-Seite prüfen; der Nutzer muss ein lokaler Controller-Nutzer sein", 900)
         raise UnifiLoginError(self._last_login_error)
 
     def _api_base(self) -> str:

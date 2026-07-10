@@ -898,8 +898,21 @@ async def update_settings(payload: dict = Body(...)) -> dict:
     return settings.get_all(mask_secrets=True)
 
 
+_last_unifi_test_ts: float = 0.0
+
+
 @app.post("/api/settings/unifi/test")
 async def test_unifi_connection(payload: dict = Body(default={})) -> dict:
+    # Mindestabstand zwischen manuellen Tests: jeder Test ist ein echter Login-
+    # Versuch am Controller - zu schnelles Wiederholen löst dessen Rate-Limit aus.
+    global _last_unifi_test_ts
+    now = time.time()
+    if now - _last_unifi_test_ts < 30:
+        return {"success": False,
+                "message": f"Bitte {int(30 - (now - _last_unifi_test_ts))} s warten - zu häufige "
+                           f"Login-Versuche lösen das Rate-Limit des Controllers aus."}
+    _last_unifi_test_ts = now
+
     saved = settings.get_all(mask_secrets=False)
     controller_url = payload.get("unifi_controller_url") or saved["unifi_controller_url"]
     username = payload.get("unifi_username") or saved["unifi_username"]
