@@ -11,7 +11,7 @@ from typing import Optional
 def tcp_check(host: str, port: int, timeout_s: float = 2.0) -> Optional[float]:
     """TCP-Verbindungstest: misst, wie schnell der Dienst auf host:port
     antwortet. Gibt die Zeit in ms zurück oder None, wenn der Dienst nicht
-    erreichbar ist. Prüft damit die Anwendung selbst (z.B. Butler21-Server),
+    erreichbar ist. Prüft damit die Anwendung selbst (z.B. einen Server-Dienst),
     nicht nur die Netzwerk-Erreichbarkeit des Geräts."""
     start = time.perf_counter()
     try:

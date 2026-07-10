@@ -132,7 +132,7 @@ Ereignis-Korrelation verwendet.
 ## Neu in v1.3.0
 
 - **Geräte-Wächter**: eigene Überwachungsziele (Einstellungen → "Geräte-Wächter"),
-  z.B. die IPTV-Box per Ping oder der Butler21-Server per TCP-Port-Check —
+  z.B. die IPTV-Box per Ping oder ein Server-Dienst per TCP-Port-Check —
   erscheinen im Dauerping-Panel und im Latenz-Verlauf.
 - **WLAN-Roaming-Erkennung**: AP-Wechsel aller WLAN-Clients werden protokolliert;
   häufige Wechsel in kurzer Zeit (Ping-Pong-Roaming) erzeugen eine Warnung.
@@ -198,9 +198,9 @@ Bei Anbietern wie Gmail/GMX/Web.de ist meist ein App-Passwort nötig.
 
 - Kein gezieltes Multicast-/IPTV-Stream-Monitoring (misst allgemeine
   Netzwerkqualität, nicht den TV-Stream selbst).
-- Kein gezieltes Monitoring des Butler21-Prozesses selbst — Verbindungs-
+- Kein gezieltes Monitoring einzelner Anwendungsprozesse — Verbindungs-
   abbrüche werden indirekt über die allgemeinen Netzwerkmetriken des
-  jeweiligen PCs sichtbar.
+  jeweiligen PCs bzw. über den Geräte-Wächter (TCP-Dienst-Check) sichtbar.
 - Korrelation ist zeitbasiert und einfach gehalten, keine automatische
   Ursachendiagnose.
 - Server-Host/Port bleiben bewusst nur in `config.yaml` (Änderung erfordert

@@ -148,17 +148,17 @@ def test_watch_targets_built_from_settings(fresh, monkeypatch):
     s = dict(settings.get_all(mask_secrets=False))
     s["watch_targets"] = [
         {"name": "IPTV-Box", "host": "192.168.1.60", "port": None},
-        {"name": "Butler21", "host": "192.168.1.10", "port": 8080},
+        {"name": "NAS", "host": "192.168.1.10", "port": 8080},
         {"name": "", "host": "", "port": None},          # leer -> ignoriert
         {"name": "Kaputt", "host": "1.2.3.4", "port": "abc"},  # Port ungültig -> Ping
     ]
     targets = main._check_targets(s)
     labels = [t["label"] for t in targets]
     assert labels[:2] == ["Gateway", "Internet"]
-    assert "IPTV-Box" in labels and "Butler21" in labels
+    assert "IPTV-Box" in labels and "NAS" in labels
     assert len(targets) == 5  # leeres Ziel wurde übersprungen
-    butler = next(t for t in targets if t["label"] == "Butler21")
-    assert butler["kind"] == "tcp" and butler["port"] == 8080
+    tcp_target = next(t for t in targets if t["label"] == "NAS")
+    assert tcp_target["kind"] == "tcp" and tcp_target["port"] == 8080
     kaputt = next(t for t in targets if t["label"] == "Kaputt")
     assert kaputt["kind"] == "ping" and kaputt["port"] is None
 

@@ -584,7 +584,7 @@ def _run_check(t: dict) -> Optional[float]:
 async def server_ping_loop() -> None:
     """Dauerping vom Server aus: kurzer Takt (Standard 2 s), damit auch kurze
     Lags sichtbar werden. Prüft neben Gateway/Internet auch die frei
-    konfigurierten Geräte-Wächter (z.B. IPTV-Box per Ping, Butler21-Server per
+    konfigurierten Geräte-Wächter (z.B. IPTV-Box per Ping, ein Server-Dienst per
     TCP-Dienst-Check). Timeouts und Latenzspitzen erzeugen sofort ein Ereignis."""
     while True:
         s = settings.get_all(mask_secrets=False)
