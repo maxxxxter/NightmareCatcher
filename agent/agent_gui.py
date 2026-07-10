@@ -18,6 +18,7 @@ from tkinter import messagebox, ttk
 import httpx
 
 import agent_settings
+import autostart
 from agent import build_targets, run_cycle
 
 FLOORS = ["Keller", "EG", "1.OG", "2.OG"]
@@ -180,6 +181,10 @@ class AgentGUI:
         menubar = tk.Menu(self.root, bg=CARD, fg=TEXT, activebackground=ACCENT)
         file_menu = tk.Menu(menubar, tearoff=0, bg=CARD, fg=TEXT, activebackground=ACCENT)
         file_menu.add_command(label="In Tray minimieren", command=self._minimize_to_tray)
+        if autostart.is_supported():
+            self._autostart_var = tk.BooleanVar(value=autostart.is_enabled("NightmareCatcher-Agent"))
+            file_menu.add_checkbutton(label="Automatisch mit Windows starten",
+                                      variable=self._autostart_var, command=self._toggle_autostart)
         file_menu.add_separator()
         file_menu.add_command(label="Beenden", command=self._quit_app)
         menubar.add_cascade(label="Datei", menu=file_menu)
@@ -253,6 +258,10 @@ class AgentGUI:
             ),
         )
         threading.Thread(target=self.tray.run, daemon=True).start()
+
+    def _toggle_autostart(self) -> None:
+        state = autostart.set_enabled("NightmareCatcher-Agent", self._autostart_var.get())
+        self._log("Autostart aktiviert." if state else "Autostart deaktiviert.")
 
     def _restore_window(self) -> None:
         self.root.deiconify()

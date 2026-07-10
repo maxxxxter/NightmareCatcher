@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from collections import deque
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import autostart
 import db
 import mailer
 import settings
@@ -496,9 +498,11 @@ async def server_ping_loop() -> None:
         )
         now = time.time()
         cooldown = s["event_cooldown_seconds"]
+        history_samples: dict[str, Optional[float]] = {}
         for (label, ip, warn, crit), rtt in zip(targets, results):
             dq = _ping_samples.setdefault(label, deque(maxlen=150))
             dq.append({"ts": now, "rtt": rtt})
+            history_samples[label] = rtt
             if not s["monitor_ping"]:
                 continue  # Messung/Anzeige läuft weiter, nur keine Ereignisse
             if rtt is None:
@@ -516,6 +520,10 @@ async def server_ping_loop() -> None:
                         f"(Warnung ab {warn} ms)",
                         {"rtt_ms": rtt},
                     )
+        try:
+            db.insert_ping_history(now, history_samples)
+        except Exception as e:
+            log.debug("Ping-Historie speichern fehlgeschlagen: %s", e)
         await asyncio.sleep(max(1, s["server_ping_interval_seconds"]))
 
 
@@ -543,6 +551,40 @@ async def mail_report_loop() -> None:
             log.warning("Mail-Versand fehlgeschlagen: %s", e)
 
 
+async def instant_alert_loop() -> None:
+    """Schickt bei neuen kritischen Ereignissen sofort eine Mail (zusätzlich zum
+    Intervall-Bericht), mit Cooldown gegen Mail-Fluten. Abschaltbar."""
+    last_seen = time.time()
+    while True:
+        await asyncio.sleep(20)
+        s = settings.get_all(mask_secrets=False)
+        now = time.time()
+        if not (s["mail_instant_alerts"] and s["mail_enabled"] and s["mail_smtp_host"] and s["mail_to"]):
+            last_seen = now
+            continue
+        cooldown = max(1, s["mail_instant_cooldown_minutes"]) * 60
+        last_sent = db.get_setting("mail_last_instant_ts", 0) or 0
+        new_criticals = [
+            e for e in db.events_since(last_seen)
+            if e["severity"] == "critical" and e["category"] != "user_marker"
+        ]
+        last_seen = now
+        if not new_criticals or now - last_sent < cooldown:
+            continue
+        lines = [f"{time.strftime('%H:%M:%S', time.localtime(e['ts']))}  {e['message']}"
+                 for e in new_criticals[-15:]]
+        subject = f"NightmareCatcher: {len(new_criticals)} kritische(s) Ereignis(se)"
+        body = ("Sofort-Alarm - kritische Ereignisse im Heimnetz:\n\n"
+                + "\n".join(lines)
+                + "\n\nWeitere Details im Dashboard.")
+        try:
+            await asyncio.to_thread(mailer.send_mail, s, subject, body)
+            db.set_setting("mail_last_instant_ts", now)
+            log.info("Sofort-Alarm an %s versendet (%d kritische Ereignisse)", s["mail_to"], len(new_criticals))
+        except Exception as e:
+            log.warning("Sofort-Alarm fehlgeschlagen: %s", e)
+
+
 async def prune_loop() -> None:
     """Stündliche Datenbank-Bereinigung, damit die Datei nicht unbegrenzt wächst."""
     while True:
@@ -553,21 +595,28 @@ async def prune_loop() -> None:
         await asyncio.sleep(3600)
 
 
-@app.on_event("startup")
-async def startup() -> None:
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     db.init(cfg.database.path)
     settings.seed_from_bootstrap(cfg)
-    asyncio.create_task(unifi_poll_loop())
-    asyncio.create_task(throughput_poll_loop())
-    asyncio.create_task(server_ping_loop())
-    asyncio.create_task(mail_report_loop())
-    asyncio.create_task(prune_loop())
+    tasks = [
+        asyncio.create_task(unifi_poll_loop()),
+        asyncio.create_task(throughput_poll_loop()),
+        asyncio.create_task(server_ping_loop()),
+        asyncio.create_task(mail_report_loop()),
+        asyncio.create_task(instant_alert_loop()),
+        asyncio.create_task(prune_loop()),
+    ]
+    try:
+        yield
+    finally:
+        for t in tasks:
+            t.cancel()
+        if _unifi_client:
+            await _unifi_client.close()
 
 
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    if _unifi_client:
-        await _unifi_client.close()
+app.router.lifespan_context = lifespan
 
 
 @app.get("/api/ping")
@@ -753,6 +802,38 @@ async def server_pings() -> list[dict]:
     return result
 
 
+@app.get("/api/history")
+async def history(minutes: int = 1440) -> dict:
+    """Ping-Verlauf (Standard: letzte 24 h) für die Diagramme im Dashboard."""
+    since = time.time() - minutes * 60
+    return {
+        "minutes": minutes,
+        "targets": {
+            "Gateway": db.ping_history("Gateway", since),
+            "Internet": db.ping_history("Internet", since),
+        },
+    }
+
+
+@app.post("/api/mark")
+async def mark_moment(payload: dict = Body(default={})) -> dict:
+    """Vom Nutzer im Dashboard gesetzter Marker ('Jetzt ruckelt es!'). Wird als
+    Ereignis gespeichert, damit man später genau diesen Moment in der Zeitleiste
+    findet - samt allem, was im selben Zeitfenster passiert ist."""
+    note = str(payload.get("note", "")).strip()[:200]
+    now = time.time()
+    msg = "Manueller Marker gesetzt (Störung bemerkt)"
+    if note:
+        msg += f": {note}"
+    db.insert_event(now, "user", "info", "user_marker", "Nutzer", None, msg, None)
+    window = settings.get_all(mask_secrets=False)["correlation_window_seconds"]
+    context = [
+        e for e in db.events_since(now - window)
+        if e["category"] != "user_marker"
+    ]
+    return {"status": "ok", "ts": now, "context_count": len(context)}
+
+
 @app.post("/api/settings/mail/test")
 async def test_mail(payload: dict = Body(default={})) -> dict:
     saved = settings.get_all(mask_secrets=False)
@@ -797,6 +878,18 @@ async def get_settings() -> dict:
 @app.get("/api/settings/defaults")
 async def get_settings_defaults() -> dict:
     return settings.get_recommended()
+
+
+@app.get("/api/autostart")
+async def get_autostart() -> dict:
+    return {"supported": autostart.is_supported(),
+            "enabled": autostart.is_enabled("NightmareCatcher-Server")}
+
+
+@app.put("/api/autostart")
+async def set_autostart(payload: dict = Body(...)) -> dict:
+    enabled = autostart.set_enabled("NightmareCatcher-Server", bool(payload.get("enabled")))
+    return {"supported": autostart.is_supported(), "enabled": enabled}
 
 
 @app.put("/api/settings")

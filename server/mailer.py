@@ -24,6 +24,7 @@ CATEGORY_LABELS = {
     "controller_log": "UniFi-Log",
     "controller_alarm": "UniFi-Alarm",
     "device_renamed": "Namensänderung",
+    "user_marker": "Marker",
 }
 
 SEVERITY_LABELS = {"critical": "KRITISCH", "warning": "Warnung", "info": "Hinweis"}

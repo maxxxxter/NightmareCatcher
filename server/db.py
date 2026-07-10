@@ -64,6 +64,14 @@ CREATE TABLE IF NOT EXISTS device_floor_map (
     floor TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'manual'
 );
+
+CREATE TABLE IF NOT EXISTS ping_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    target TEXT NOT NULL,
+    rtt_ms REAL
+);
+CREATE INDEX IF NOT EXISTS idx_ping_history_ts ON ping_history(target, ts);
 """
 
 _MISSING = object()
@@ -217,12 +225,53 @@ def latest_device_names() -> dict[str, str]:
     return {r["device_mac"]: r["device_name"] for r in rows if r["device_name"]}
 
 
+def insert_ping_history(ts: float, samples: dict[str, Optional[float]]) -> None:
+    """Speichert die aktuellen Dauerping-Werte (rtt_ms=None bei Timeout)."""
+    with _lock:
+        _conn.executemany(
+            "INSERT INTO ping_history (ts, target, rtt_ms) VALUES (?, ?, ?)",
+            [(ts, target, rtt) for target, rtt in samples.items()],
+        )
+        _conn.commit()
+
+
+def ping_history(target: str, since_ts: float, max_points: int = 300) -> list[dict]:
+    """Verlauf eines Ping-Ziels, auf max_points heruntergerechnet (Mittelwert
+    je Zeit-Bucket, Verlust = Anteil der Timeouts im Bucket)."""
+    with _lock:
+        rows = _conn.execute(
+            "SELECT ts, rtt_ms FROM ping_history WHERE target = ? AND ts >= ? ORDER BY ts ASC",
+            (target, since_ts),
+        ).fetchall()
+    if not rows:
+        return []
+    span = max(rows[-1]["ts"] - rows[0]["ts"], 1)
+    bucket = span / max_points
+    start = rows[0]["ts"]
+    buckets: dict[int, list] = {}
+    for r in rows:
+        idx = min(int((r["ts"] - start) / bucket), max_points - 1)
+        buckets.setdefault(idx, []).append(r["rtt_ms"])
+    result = []
+    for idx in sorted(buckets):
+        vals = buckets[idx]
+        ok = [v for v in vals if v is not None]
+        result.append({
+            "ts": round(start + idx * bucket),
+            "avg_ms": round(sum(ok) / len(ok), 1) if ok else None,
+            "max_ms": round(max(ok), 1) if ok else None,
+            "loss_percent": round((len(vals) - len(ok)) / len(vals) * 100, 1),
+        })
+    return result
+
+
 def prune(now: float) -> None:
     """Alte Daten entfernen, damit die Datenbank nicht unbegrenzt wächst.
     UniFi-Snapshots (große Roh-JSONs, nur der jeweils letzte wird angezeigt): 24 h.
-    Messwerte der Agenten: 14 Tage. Ereignisse: 90 Tage."""
+    Ping-Historie: 3 Tage. Messwerte der Agenten: 14 Tage. Ereignisse: 90 Tage."""
     with _lock:
         _conn.execute("DELETE FROM unifi_snapshots WHERE ts < ?", (now - 24 * 3600,))
+        _conn.execute("DELETE FROM ping_history WHERE ts < ?", (now - 3 * 86400,))
         _conn.execute("DELETE FROM measurements WHERE ts < ?", (now - 14 * 86400,))
         _conn.execute("DELETE FROM events WHERE ts < ?", (now - 90 * 86400,))
         _conn.commit()

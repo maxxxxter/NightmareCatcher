@@ -8,3 +8,4 @@ build/
 *.spec
 dist/
 agent.db
+.pytest_cache/

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NightmareCatcher</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23534ab7'/%3E%3Cpath d='M20 46V18l24 28V18' stroke='white' stroke-width='7' fill='none' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #111318;
@@ -114,8 +115,16 @@
   <a href="/settings">Einstellungen</a>
 </nav>
 
-<h1>NightmareCatcher</h1>
-<p class="subtitle">Live-Status der Messagenten und der UniFi-Infrastruktur &middot; aktualisiert automatisch alle 5 s</p>
+<div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+  <div>
+    <h1>NightmareCatcher</h1>
+    <p class="subtitle">Live-Status der Messagenten und der UniFi-Infrastruktur &middot; aktualisiert automatisch alle 5 s</p>
+  </div>
+  <button id="mark-btn" onclick="markMoment()" style="background:var(--crit-bg); color:var(--crit); border:1px solid var(--crit); border-radius:10px; padding:10px 18px; font-size:14px; font-weight:600; cursor:pointer; white-space:nowrap;">
+    ⚠ Jetzt ruckelt es!
+  </button>
+</div>
+<div id="mark-feedback" style="display:none; margin:0 0 16px; padding:10px 14px; border-radius:10px; background:var(--warn-bg); color:var(--warn); font-size:13px;"></div>
 
 <div class="section">
   <h2>Internetauslastung</h2>
@@ -161,6 +170,27 @@
 </div>
 
 <div class="section">
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+    <h2 style="margin:0;">Latenz-Verlauf</h2>
+    <select id="history-range" onchange="refreshHistory()" style="background:var(--card-bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:5px 8px; font-size:13px;">
+      <option value="60">Letzte Stunde</option>
+      <option value="360">Letzte 6 Stunden</option>
+      <option value="1440" selected>Letzte 24 Stunden</option>
+      <option value="4320">Letzte 3 Tage</option>
+    </select>
+  </div>
+  <div class="card" style="margin-top:12px;">
+    <div style="display:flex; gap:14px; font-size:12px; color:var(--text-muted); margin-bottom:8px;">
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#03a9f4;vertical-align:middle;"></span> Gateway</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#ffb300;vertical-align:middle;"></span> Internet</span>
+      <span style="margin-left:auto;">Punkte = Ausfälle</span>
+    </div>
+    <canvas id="history-canvas" height="200" style="width:100%; height:200px; display:block;"></canvas>
+    <div id="history-empty" class="empty" style="display:none;">Noch keine Verlaufsdaten gesammelt.</div>
+  </div>
+</div>
+
+<div class="section">
   <h2>Router (UDM)</h2>
   <div class="card" id="gateway-card">
     <p class="empty">Noch keine Gateway-Daten (UniFi-Integration prüfen).</p>
@@ -184,6 +214,27 @@
 
 <div class="section">
   <h2>Ereignis-Zeitleiste</h2>
+  <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+    <select id="filter-severity" onchange="renderEvents()" style="background:var(--card-bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:5px 8px; font-size:13px;">
+      <option value="">Alle Schweregrade</option>
+      <option value="critical">Nur kritisch</option>
+      <option value="warning">Warnung und höher</option>
+    </select>
+    <select id="filter-source" onchange="renderEvents()" style="background:var(--card-bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:5px 8px; font-size:13px;">
+      <option value="">Alle Quellen</option>
+      <option value="unifi">UniFi</option>
+      <option value="agent">Agent</option>
+      <option value="server">Server</option>
+      <option value="user">Marker</option>
+    </select>
+    <select id="filter-floor" onchange="renderEvents()" style="background:var(--card-bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:5px 8px; font-size:13px;">
+      <option value="">Alle Stockwerke</option>
+      <option value="Keller">Keller</option>
+      <option value="EG">EG</option>
+      <option value="1.OG">1.OG</option>
+      <option value="2.OG">2.OG</option>
+    </select>
+  </div>
   <div class="card" id="events-card"></div>
 </div>
 
@@ -197,9 +248,9 @@ const CATEGORY_LABELS = {
   wan_latency: 'Internet-Latenz', wan_status: 'WAN-Status',
   ping_timeout: 'Ping-Ausfall', ping_latency: 'Ping-Latenz',
   controller_log: 'UniFi-Log', controller_alarm: 'UniFi-Alarm',
-  device_renamed: 'Namensänderung',
+  device_renamed: 'Namensänderung', user_marker: 'Marker',
 };
-const SOURCE_LABELS = { unifi: 'UniFi', agent: 'Agent', server: 'Server' };
+const SOURCE_LABELS = { unifi: 'UniFi', agent: 'Agent', server: 'Server', user: 'Marker' };
 const SEVERITY_BADGES = {
   critical: ['critical', 'Kritisch'],
   warning: ['warning', 'Warnung'],
@@ -422,25 +473,128 @@ async function refreshUnifi() {
   `).join('');
 }
 
+let allEvents = [];
+
 async function refreshEvents() {
-  const res = await fetch('/api/events?limit=50');
-  const rows = await res.json();
+  const res = await fetch('/api/events?limit=100');
+  allEvents = await res.json();
+  renderEvents();
+}
+
+function renderEvents() {
   const card = document.getElementById('events-card');
+  const sev = document.getElementById('filter-severity').value;
+  const src = document.getElementById('filter-source').value;
+  const floor = document.getElementById('filter-floor').value;
+  const rows = allEvents.filter(e => {
+    if (sev === 'critical' && e.severity !== 'critical') return false;
+    if (sev === 'warning' && e.severity === 'info') return false;
+    if (src && e.source !== src) return false;
+    if (floor && e.floor !== floor) return false;
+    return true;
+  });
   if (rows.length === 0) {
-    card.innerHTML = '<p class="empty">Noch keine Ereignisse aufgezeichnet.</p>';
+    card.innerHTML = '<p class="empty">' + (allEvents.length ? 'Keine Ereignisse für diese Filter.' : 'Noch keine Ereignisse aufgezeichnet.') + '</p>';
     return;
   }
-  card.innerHTML = rows.map(e => `
-    <div class="event-row">
+  card.innerHTML = rows.map(e => {
+    const isMarker = e.category === 'user_marker';
+    const badge = SEVERITY_BADGES[e.severity] || SEVERITY_BADGES.warning;
+    return `
+    <div class="event-row"${isMarker ? ' style="background:var(--warn-bg); margin:0 -8px; padding-left:8px; padding-right:8px; border-radius:8px;"' : ''}>
       <div class="event-time">${fmtTime(e.ts)}</div>
       <div class="event-msg">
-        <span class="badge level-${(SEVERITY_BADGES[e.severity] || SEVERITY_BADGES.warning)[0]}">${(SEVERITY_BADGES[e.severity] || SEVERITY_BADGES.warning)[1]}</span>
+        <span class="badge level-${badge[0]}">${isMarker ? '⚠ ' : ''}${badge[1]}</span>
         <span class="source-tag">${SOURCE_LABELS[e.source] || e.source} · ${CATEGORY_LABELS[e.category] || e.category}${e.floor ? ' · ' + e.floor : ''}</span>
         <div>${e.message}</div>
         ${e.related.length > 0 ? `<div class="event-related">Zeitgleich: ${e.related.map(r => r.message).join(' · ')}</div>` : ''}
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
+}
+
+async function markMoment() {
+  const btn = document.getElementById('mark-btn');
+  const fb = document.getElementById('mark-feedback');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/mark', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const r = await res.json();
+    fb.style.display = 'block';
+    fb.textContent = r.context_count > 0
+      ? `Moment festgehalten. ${r.context_count} Ereignis(se) im selben Zeitfenster – siehe Zeitleiste unten.`
+      : 'Moment festgehalten. Aktuell keine anderen Auffälligkeiten im Zeitfenster – der Marker hilft trotzdem beim späteren Nachschauen.';
+    await refreshEvents();
+  } catch (e) {
+    fb.style.display = 'block';
+    fb.textContent = 'Konnte den Marker nicht speichern: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { fb.style.display = 'none'; }, 10000);
+  }
+}
+
+function drawHistory(targets) {
+  const canvas = document.getElementById('history-canvas');
+  const empty = document.getElementById('history-empty');
+  const series = [
+    { name: 'Gateway', color: '#03a9f4', data: targets.Gateway || [] },
+    { name: 'Internet', color: '#ffb300', data: targets.Internet || [] },
+  ];
+  const hasData = series.some(s => s.data.length > 1);
+  canvas.style.display = hasData ? 'block' : 'none';
+  empty.style.display = hasData ? 'none' : 'block';
+  if (!hasData) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = 200;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  const padL = 40, padR = 10, padT = 10, padB = 22;
+
+  const allTs = series.flatMap(s => s.data.map(p => p.ts));
+  const allMs = series.flatMap(s => s.data.map(p => p.avg_ms).filter(v => v != null));
+  if (allTs.length === 0 || allMs.length === 0) { canvas.style.display='none'; empty.style.display='block'; return; }
+  const minT = Math.min(...allTs), maxT = Math.max(...allTs);
+  const maxV = Math.max(20, Math.ceil(Math.max(...allMs) / 10) * 10);
+  const x = t => padL + (t - minT) / (maxT - minT || 1) * (w - padL - padR);
+  const y = v => padT + (1 - v / maxV) * (h - padT - padB);
+
+  ctx.strokeStyle = '#2c2e38'; ctx.fillStyle = '#9a9da8'; ctx.font = '11px sans-serif'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const gv = maxV * i / 4, gy = y(gv);
+    ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(w - padR, gy); ctx.stroke();
+    ctx.fillText(gv + ' ms', 2, gy + 4);
+  }
+  const fmtAxis = ts => new Date(ts * 1000).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  ctx.fillText(fmtAxis(minT), padL, h - 6);
+  ctx.textAlign = 'right'; ctx.fillText(fmtAxis(maxT), w - padR, h - 6); ctx.textAlign = 'left';
+
+  for (const s of series) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 1.5; ctx.beginPath();
+    let started = false;
+    for (const p of s.data) {
+      if (p.avg_ms == null) { started = false; continue; }
+      const px = x(p.ts), py = y(Math.min(p.avg_ms, maxV));
+      if (!started) { ctx.moveTo(px, py); started = true; } else { ctx.lineTo(px, py); }
+    }
+    ctx.stroke();
+    ctx.fillStyle = '#f44336';
+    for (const p of s.data) {
+      if (p.loss_percent > 0) { ctx.beginPath(); ctx.arc(x(p.ts), padT + 4, 2.5, 0, 7); ctx.fill(); }
+    }
+  }
+}
+
+async function refreshHistory() {
+  const minutes = document.getElementById('history-range').value;
+  try {
+    const res = await fetch('/api/history?minutes=' + minutes);
+    const data = await res.json();
+    drawHistory(data.targets);
+  } catch (e) { console.error('Verlauf fehlgeschlagen', e); }
 }
 
 async function refreshAll() {
@@ -452,7 +606,9 @@ async function refreshAll() {
 }
 
 refreshAll();
+refreshHistory();
 setInterval(refreshAll, 5000);
+setInterval(refreshHistory, 60000);
 </script>
 
 </body>

@@ -61,6 +61,8 @@ DEFAULTS: dict = {
     "mail_from": "",
     "mail_to": "marc@radler.org",
     "mail_report_interval_hours": 24,
+    "mail_instant_alerts": False,
+    "mail_instant_cooldown_minutes": 15,
 
     "monitor_ping": True,
     "monitor_agents": True,
@@ -145,10 +147,25 @@ def seed_from_bootstrap(cfg: Config) -> None:
             continue
         if db.get_setting(key, default) != default:
             db.set_setting(key, default)
+    _invalidate_cache()
+
+
+# In-Memory-Cache der kompletten Einstellungen. get_all() wird sehr häufig
+# aufgerufen (u.a. im 2-Sekunden-Ping-Loop) - ohne Cache wären das je Aufruf
+# ~55 einzelne SQLite-Abfragen. Der Cache wird bei jeder Änderung geleert.
+_cache: Optional[dict] = None
+
+
+def _invalidate_cache() -> None:
+    global _cache
+    _cache = None
 
 
 def get_all(mask_secrets: bool = True) -> dict:
-    result = {key: db.get_setting(key, default) for key, default in DEFAULTS.items()}
+    global _cache
+    if _cache is None:
+        _cache = {key: db.get_setting(key, default) for key, default in DEFAULTS.items()}
+    result = dict(_cache)
     if mask_secrets:
         for key in SECRET_KEYS:
             result[key] = bool(result[key])
@@ -185,3 +202,4 @@ def update(partial: dict) -> None:
         else:
             modified.add(key)
     _save_modified(modified)
+    _invalidate_cache()

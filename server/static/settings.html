@@ -215,6 +215,11 @@
     <div><label for="mail_password">Passwort</label><input type="password" id="mail_password" placeholder="unverändert lassen"></div>
     <div><label for="mail_from">Absenderadresse</label><input type="text" id="mail_from" placeholder="leer = Benutzername"></div>
     <div><label for="mail_to">Empfängeradresse</label><input type="text" id="mail_to"></div>
+    <div>
+      <label for="mail_instant_alerts">Sofort-Alarm</label>
+      <div class="checkbox-row"><input type="checkbox" id="mail_instant_alerts"><span>Bei kritischen Ereignissen sofort mailen (zusätzlich zum Intervall-Bericht)</span></div>
+    </div>
+    <div><label for="mail_instant_cooldown_minutes">Sofort-Alarm frühestens alle (Min.)</label><input type="number" step="1" min="1" id="mail_instant_cooldown_minutes"></div>
   </div>
   <div class="actions">
     <button id="mail-test-btn" type="button">Test-Mail senden</button>
@@ -222,8 +227,15 @@
   </div>
 </div>
 
+<div class="card">
+  <h2>Programm</h2>
+  <p class="hint">Autostart trägt NightmareCatcher in den Windows-Autostart des aktuellen Benutzers ein, sodass der Server nach dem Anmelden automatisch läuft.</p>
+  <div class="checkbox-row"><input type="checkbox" id="autostart-toggle"><span id="autostart-label">Automatisch mit Windows starten</span></div>
+</div>
+
 <div class="actions" style="margin: -6px 0 24px;">
   <button class="primary" id="save-btn" type="button">Einstellungen speichern</button>
+  <button id="reset-btn" type="button">Auf Empfehlung zurücksetzen</button>
   <span id="save-status"></span>
 </div>
 
@@ -250,10 +262,12 @@ const FIELD_IDS = [
   'ping_local_warn_ms', 'ping_local_crit_ms', 'ping_internet_warn_ms', 'ping_internet_crit_ms',
   'mail_enabled', 'mail_smtp_host', 'mail_smtp_port', 'mail_use_tls',
   'mail_username', 'mail_password', 'mail_from', 'mail_to', 'mail_report_interval_hours',
+  'mail_instant_alerts', 'mail_instant_cooldown_minutes',
   'monitor_ping', 'monitor_agents', 'monitor_ports', 'monitor_wifi',
   'monitor_gateway', 'monitor_wan', 'monitor_controller_logs',
 ];
 const BOOL_IDS = ['unifi_enabled', 'unifi_verify_ssl', 'mail_enabled', 'mail_use_tls',
+  'mail_instant_alerts',
   'monitor_ping', 'monitor_agents', 'monitor_ports', 'monitor_wifi',
   'monitor_gateway', 'monitor_wan', 'monitor_controller_logs'];
 const SECRET_IDS = ['unifi_password', 'mail_password'];
@@ -430,12 +444,53 @@ async function testMail() {
   }
 }
 
+async function loadAutostart() {
+  const toggle = document.getElementById('autostart-toggle');
+  const label = document.getElementById('autostart-label');
+  try {
+    const s = await (await fetch('/api/autostart')).json();
+    if (!s.supported) {
+      toggle.disabled = true;
+      label.textContent = 'Automatischer Start nur unter Windows verfügbar';
+      return;
+    }
+    toggle.checked = s.enabled;
+  } catch (e) { label.textContent = 'Autostart-Status nicht abrufbar'; }
+}
+
+async function saveAutostart() {
+  const toggle = document.getElementById('autostart-toggle');
+  try {
+    const s = await (await fetch('/api/autostart', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: toggle.checked }),
+    })).json();
+    toggle.checked = s.enabled;
+  } catch (e) { /* still */ }
+}
+
+async function resetToDefaults() {
+  if (!confirm('Alle Einstellungen (außer Zugangsdaten und Passwörtern) auf die empfohlenen Werte zurücksetzen?')) return;
+  const rec = await (await fetch('/api/settings/defaults')).json();
+  await fetch('/api/settings', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rec),
+  });
+  await loadSettings();
+  const statusEl = document.getElementById('save-status');
+  statusEl.innerHTML = '<span class="badge ok">Auf Empfehlung zurückgesetzt</span>';
+  setTimeout(() => { statusEl.textContent = ''; }, 4000);
+}
+
 document.getElementById('save-btn').addEventListener('click', saveSettings);
+document.getElementById('reset-btn').addEventListener('click', resetToDefaults);
 document.getElementById('test-btn').addEventListener('click', testConnection);
 document.getElementById('mail-test-btn').addEventListener('click', testMail);
+document.getElementById('autostart-toggle').addEventListener('change', saveAutostart);
 
 loadSettings();
 showRecommended();
+loadAutostart();
 loadDevices();
 setInterval(loadDevices, 15000);
 </script>
