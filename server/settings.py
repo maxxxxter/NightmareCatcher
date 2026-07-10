@@ -7,6 +7,8 @@ YAML-Dateien mehr nötig, keine Zugangsdaten im Klartext in Konfigurationsdateie
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import db
 from config import Config
 

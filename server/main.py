@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re as _re
 import sys
 import time
 from collections import deque
@@ -91,8 +92,6 @@ class ReportIn(BaseModel):
     measurements: list[MeasurementIn] = []
     events: list[EventIn] = []
 
-
-import re as _re
 
 _FLOOR_PATTERNS = [
     # Reihenfolge wichtig: spezifische Muster zuerst ("2.OG" enthält auch "OG").
@@ -724,6 +723,8 @@ async def speedtest_loop() -> None:
                 if not rundate or down is None:
                     log.info("Speedtest-Ergebnis noch nicht verfügbar")
                     break
+                if rundate > 1e12:
+                    rundate = rundate / 1000  # manche Firmware liefert Millisekunden
                 if rundate <= db.last_speedtest_ts():
                     break  # kein neues Ergebnis (alter Lauf)
                 db.insert_speedtest(rundate, round(down, 1), round(up, 1) if up else None, latency)

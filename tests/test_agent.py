@@ -2,7 +2,6 @@
 import sys
 from pathlib import Path
 
-import pytest
 
 AGENT = Path(__file__).resolve().parent.parent / "agent"
 sys.path.insert(0, str(AGENT))

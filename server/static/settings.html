@@ -520,11 +520,13 @@ async function loadDevices() {
       .concat(['Keller', 'EG', '1.OG', '2.OG'].map(f => `<option value="${f}" ${d.floor === f ? 'selected' : ''}>${f}</option>`));
     const autoTag = d.floor && d.floor_source === 'auto'
       ? '<span style="font-size:11px; color:var(--text-muted); margin-left:6px;">automatisch</span>' : '';
+    const esc = v => String(v ?? '').replace(/[&<>"']/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     tr.innerHTML = `
-      <td>${d.device_name || d.device_mac}</td>
-      <td style="font-variant-numeric: tabular-nums;">${d.ip || '–'}</td>
-      <td>${TYPE_LABELS[d.device_type] || d.device_type || '–'}</td>
-      <td>${d.model || '–'}</td>
+      <td>${esc(d.device_name || d.device_mac)}</td>
+      <td style="font-variant-numeric: tabular-nums;">${esc(d.ip || '–')}</td>
+      <td>${TYPE_LABELS[d.device_type] || esc(d.device_type || '–')}</td>
+      <td>${esc(d.model || '–')}</td>
       <td>
         <select data-mac="${d.device_mac}">${options.join('')}</select>${autoTag}
         <span class="row-saved" style="display:none;">gespeichert</span>

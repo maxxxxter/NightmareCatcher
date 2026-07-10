@@ -285,6 +285,14 @@ const SEVERITY_BADGES = {
   info: ['ok', 'Info'],
 };
 
+function esc(value) {
+  // HTML-Escaping für alle Strings, die nicht aus der App selbst stammen
+  // (Gerätenamen aus dem Netz, UniFi-Log-Texte, eigene Wächter-Namen) -
+  // verhindert, dass ein präparierter Hostname Script ins Dashboard einschleust.
+  return String(value ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function fmtTime(ts) {
   const d = new Date(ts * 1000);
   return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -401,8 +409,8 @@ async function refreshPings() {
   panel.innerHTML = targets.map(t => `
     <div style="display:flex; align-items:center; gap:16px; padding:6px 0;">
       <div style="width:150px; flex:0 0 auto;">
-        <div style="font-size:13px;">Dauerping ${t.label}</div>
-        <div style="font-size:11px; color:var(--text-muted); font-variant-numeric:tabular-nums;">${t.ip}</div>
+        <div style="font-size:13px;">Dauerping ${esc(t.label)}</div>
+        <div style="font-size:11px; color:var(--text-muted); font-variant-numeric:tabular-nums;">${esc(t.ip)}</div>
       </div>
       <div style="flex:1; min-width:0;">${sparkline(t.samples, t.warn_ms)}</div>
       <div style="width:170px; flex:0 0 auto; text-align:right;">
@@ -433,12 +441,12 @@ async function refreshGateway() {
     { label: 'Laufzeit', value: fmtUptime(g.uptime), level: null },
   ];
   card.innerHTML = `
-    <p class="subtitle" style="margin-bottom:12px;">${g.name || 'Gateway'} · Stand ${fmtTime(g.ts)}</p>
+    <p class="subtitle" style="margin-bottom:12px;">${esc(g.name || 'Gateway')} · Stand ${fmtTime(g.ts)}</p>
     <div class="metric-grid">
       ${metrics.map(m => `
         <div class="metric m-${m.level || 'none'}">
           <div class="label">${m.label}</div>
-          <div class="value">${m.value}</div>
+          <div class="value">${esc(m.value)}</div>
         </div>`).join('')}
     </div>
   `;
@@ -467,13 +475,13 @@ async function refreshStatus() {
     card.className = 'card';
     let rowsHtml = info.targets.map(t => `
       <tr>
-        <td>${t.target_label}</td>
-        <td>${t.loss_percent}% Verlust</td>
+        <td>${esc(t.target_label)}</td>
+        <td>${esc(t.loss_percent)}% Verlust</td>
         <td>${t.jitter_ms != null ? t.jitter_ms.toFixed(1) + ' ms Jitter' : '–'}</td>
       </tr>`).join('');
     card.innerHTML = `
-      <h2>${name} <span class="badge level-${worst.level}">${levelLabel(worst.level)}</span></h2>
-      <p class="subtitle" style="margin-bottom:8px;">${info.floor} &middot; ${info.conn || 'unbekannt'}</p>
+      <h2>${esc(name)} <span class="badge level-${worst.level}">${levelLabel(worst.level)}</span></h2>
+      <p class="subtitle" style="margin-bottom:8px;">${esc(info.floor)} &middot; ${esc(info.conn || 'unbekannt')}</p>
       <table><tbody>${rowsHtml}</tbody></table>
     `;
     grid.appendChild(card);
@@ -490,10 +498,10 @@ async function refreshUnifi() {
   }
   tbody.innerHTML = rows.map(d => `
     <tr>
-      <td>${d.device_name || d.device_mac}</td>
-      <td style="font-variant-numeric: tabular-nums;">${d.ip || '–'}</td>
-      <td>${TYPE_LABELS[d.device_type] || d.device_type || '–'}</td>
-      <td>${d.floor || '–'}</td>
+      <td>${esc(d.device_name || d.device_mac)}</td>
+      <td style="font-variant-numeric: tabular-nums;">${esc(d.ip || '–')}</td>
+      <td>${TYPE_LABELS[d.device_type] || esc(d.device_type || '–')}</td>
+      <td>${esc(d.floor || '–')}</td>
       <td>${d.state === 1 ? '<span class="badge level-ok">Online</span>' : '<span class="badge level-critical">Offline</span>'}</td>
       <td>${d.satisfaction != null ? d.satisfaction + '%' : '–'}</td>
       <td>${d.num_sta != null ? d.num_sta : '–'}</td>
@@ -533,9 +541,9 @@ function renderEvents() {
       <div class="event-time">${fmtTime(e.ts)}</div>
       <div class="event-msg">
         <span class="badge level-${badge[0]}">${isMarker ? '⚠ ' : ''}${badge[1]}</span>
-        <span class="source-tag">${SOURCE_LABELS[e.source] || e.source} · ${CATEGORY_LABELS[e.category] || e.category}${e.floor ? ' · ' + e.floor : ''}</span>
-        <div>${e.message}</div>
-        ${e.related.length > 0 ? `<div class="event-related">Zeitgleich: ${e.related.map(r => r.message).join(' · ')}</div>` : ''}
+        <span class="source-tag">${SOURCE_LABELS[e.source] || esc(e.source)} · ${CATEGORY_LABELS[e.category] || esc(e.category)}${e.floor ? ' · ' + esc(e.floor) : ''}</span>
+        <div>${esc(e.message)}</div>
+        ${e.related.length > 0 ? `<div class="event-related">Zeitgleich: ${e.related.map(r => esc(r.message)).join(' · ')}</div>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -573,7 +581,7 @@ function drawHistory(targets) {
   const legend = document.getElementById('history-legend');
   if (legend) {
     legend.innerHTML = series.map(s =>
-      `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};vertical-align:middle;"></span> ${s.name}</span>`
+      `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};vertical-align:middle;"></span> ${esc(s.name)}</span>`
     ).join(' ');
   }
   const hasData = series.some(s => s.data.length > 1);
