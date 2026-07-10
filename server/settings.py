@@ -64,6 +64,17 @@ DEFAULTS: dict = {
     "mail_instant_alerts": False,
     "mail_instant_cooldown_minutes": 15,
 
+    # Geräte-Wächter: frei konfigurierbare Überwachungsziele, z.B.
+    # [{"name": "IPTV-Box", "host": "192.168.1.60", "port": null}]
+    # port gesetzt -> TCP-Verbindungstest (Dienst), sonst Ping.
+    "watch_targets": [],
+    "watch_warn_ms": 100,
+    "watch_crit_ms": 500,
+
+    "speedtest_interval_hours": 6,
+    "speedtest_warn_percent": 50,
+
+    "monitor_watch": True,
     "monitor_ping": True,
     "monitor_agents": True,
     "monitor_ports": True,
@@ -88,6 +99,7 @@ THRESHOLD_KEYS = {
     "gw_temp_warn", "gw_temp_crit", "wan_latency_ms_warn", "wan_latency_ms_crit",
     "ping_local_warn_ms", "ping_local_crit_ms", "ping_internet_warn_ms", "ping_internet_crit_ms",
     "server_ping_interval_seconds", "unifi_poll_interval_seconds",
+    "watch_warn_ms", "watch_crit_ms", "speedtest_interval_hours", "speedtest_warn_percent",
 }
 
 # Merkliste der manuell (über die GUI) geänderten Schlüssel. Nur Werte, die

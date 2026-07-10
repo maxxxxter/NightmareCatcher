@@ -142,5 +142,26 @@ class UnifiClient:
         data = await self._get(f"/s/{self.site}/list/alarm")
         return data.get("data", [])
 
+    async def _post(self, path: str, payload: dict) -> dict:
+        if self._is_unifi_os is None:
+            await self._login()
+
+        headers = {"x-csrf-token": self._csrf_token} if self._csrf_token else {}
+        url = f"{self._api_base()}{path}"
+        resp = await self._client.post(url, json=payload, headers=headers)
+
+        if resp.status_code in (401, 403):
+            await self._login()
+            headers = {"x-csrf-token": self._csrf_token} if self._csrf_token else {}
+            resp = await self._client.post(url, json=payload, headers=headers)
+
+        resp.raise_for_status()
+        return resp.json()
+
+    async def start_speedtest(self) -> None:
+        """Stößt den Speedtest des Gateways an (Ergebnis erscheint nach ~30-60 s
+        in den Gerätedaten unter 'speedtest-status')."""
+        await self._post(f"/s/{self.site}/cmd/devmgr", {"cmd": "speedtest"})
+
     async def close(self) -> None:
         await self._client.aclose()

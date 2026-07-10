@@ -130,6 +130,8 @@
   <h2>Überwachung</h2>
   <p class="hint">Einzelne Messbereiche lassen sich hier von der Ereignis-Erzeugung ausnehmen. Die Messung und Anzeige im Dashboard läuft dabei weiter &ndash; es werden nur keine Warnungen mehr ausgelöst (auch nicht im Mail-Bericht).</p>
   <div class="field-grid">
+    <div><label for="monitor_watch">Geräte-Wächter</label>
+      <div class="checkbox-row"><input type="checkbox" id="monitor_watch"><span>Ausfälle/Latenzen der eigenen Überwachungsziele melden</span></div></div>
     <div><label for="monitor_ping">Dauerping (Server)</label>
       <div class="checkbox-row"><input type="checkbox" id="monitor_ping"><span>Latenzspitzen/Timeouts melden</span></div></div>
     <div><label for="monitor_agents">Agenten (PCs/Notebooks)</label>
@@ -179,6 +181,8 @@
   <p class="hint">Referenzwert für die Speedmeter-Anzeige im Dashboard (z.B. gebuchte Bandbreite deines Anschlusses).</p>
   <div class="field-grid">
     <div><label for="wan_max_mbps">Anschluss-Bandbreite (Mbit/s)</label><input type="number" step="1" id="wan_max_mbps"></div>
+    <div><label for="speedtest_interval_hours">Speedtest-Intervall (h, 0 = aus)</label><input type="number" step="1" id="speedtest_interval_hours"></div>
+    <div><label for="speedtest_warn_percent">Speedtest-Warnung unter (% der Bandbreite)</label><input type="number" step="1" id="speedtest_warn_percent"></div>
   </div>
 </div>
 
@@ -193,6 +197,24 @@
     <div><label for="ping_local_crit_ms">Lokal kritisch (ms)</label><input type="number" step="1" id="ping_local_crit_ms"></div>
     <div><label for="ping_internet_warn_ms">Internet Warnung (ms)</label><input type="number" step="1" id="ping_internet_warn_ms"></div>
     <div><label for="ping_internet_crit_ms">Internet kritisch (ms)</label><input type="number" step="1" id="ping_internet_crit_ms"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Geräte-Wächter</h2>
+  <p class="hint">Eigene Überwachungsziele, z.B. die IPTV-Box (Ping) oder der Butler21-Server (mit Port: TCP-Dienst-Check &ndash; prüft, ob die Anwendung selbst antwortet). Erscheinen im Dashboard beim Dauerping und im Latenz-Verlauf.</p>
+  <table id="watch-table" style="margin-bottom:10px;">
+    <thead><tr><th>Name</th><th>Host/IP</th><th>Port (leer = Ping)</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="actions" style="margin-top:0;">
+    <button type="button" id="watch-add-btn">Ziel hinzufügen</button>
+    <button type="button" class="primary" id="watch-save-btn">Wächter speichern</button>
+    <span id="watch-status"></span>
+  </div>
+  <div class="field-grid" style="margin-top:14px;">
+    <div><label for="watch_warn_ms">Warnung ab (ms)</label><input type="number" step="1" id="watch_warn_ms"></div>
+    <div><label for="watch_crit_ms">Kritisch ab (ms)</label><input type="number" step="1" id="watch_crit_ms"></div>
   </div>
 </div>
 
@@ -240,6 +262,17 @@
 </div>
 
 <div class="card">
+  <h2>Sicherung</h2>
+  <p class="hint">Alle Einstellungen (inklusive Zugangsdaten!) als Datei sichern oder aus einer Sicherung wiederherstellen. Die Datei entsprechend sorgsam aufbewahren.</p>
+  <div class="actions" style="margin-top:0;">
+    <button type="button" id="export-btn">Einstellungen exportieren</button>
+    <button type="button" id="import-btn">Einstellungen importieren…</button>
+    <input type="file" id="import-file" accept=".json" style="display:none;">
+    <span id="backup-status"></span>
+  </div>
+</div>
+
+<div class="card">
   <h2>Geräte &amp; Stockwerke</h2>
   <p class="hint">UniFi-Geräte werden automatisch erkannt und anhand des Namens einem Stockwerk zugeordnet (z.B. "Switch 1.OG" &rarr; 1.OG, "AP Büro" &rarr; 2.OG). Eine manuelle Auswahl übersteuert die Automatik dauerhaft.</p>
   <table id="device-table">
@@ -260,15 +293,16 @@ const FIELD_IDS = [
   'gw_temp_warn', 'gw_temp_crit', 'wan_latency_ms_warn', 'wan_latency_ms_crit',
   'server_ping_interval_seconds', 'ping_target_local', 'ping_target_internet',
   'ping_local_warn_ms', 'ping_local_crit_ms', 'ping_internet_warn_ms', 'ping_internet_crit_ms',
+  'watch_warn_ms', 'watch_crit_ms', 'speedtest_interval_hours', 'speedtest_warn_percent',
   'mail_enabled', 'mail_smtp_host', 'mail_smtp_port', 'mail_use_tls',
   'mail_username', 'mail_password', 'mail_from', 'mail_to', 'mail_report_interval_hours',
   'mail_instant_alerts', 'mail_instant_cooldown_minutes',
-  'monitor_ping', 'monitor_agents', 'monitor_ports', 'monitor_wifi',
+  'monitor_watch', 'monitor_ping', 'monitor_agents', 'monitor_ports', 'monitor_wifi',
   'monitor_gateway', 'monitor_wan', 'monitor_controller_logs',
 ];
 const BOOL_IDS = ['unifi_enabled', 'unifi_verify_ssl', 'mail_enabled', 'mail_use_tls',
   'mail_instant_alerts',
-  'monitor_ping', 'monitor_agents', 'monitor_ports', 'monitor_wifi',
+  'monitor_watch', 'monitor_ping', 'monitor_agents', 'monitor_ports', 'monitor_wifi',
   'monitor_gateway', 'monitor_wan', 'monitor_controller_logs'];
 const SECRET_IDS = ['unifi_password', 'mail_password'];
 
@@ -291,6 +325,101 @@ async function showRecommended() {
 
 const TYPE_LABELS = { usw: 'Switch', uap: 'Access Point', ugw: 'Router/Gateway', udm: 'Router/Gateway', uxg: 'Router/Gateway' };
 
+function watchRow(t) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text" class="watch-name" value="${(t.name || '').replace(/"/g, '&quot;')}" placeholder="z.B. IPTV-Box" style="width:100%;"></td>
+    <td><input type="text" class="watch-host" value="${(t.host || '').replace(/"/g, '&quot;')}" placeholder="192.168.1.60" style="width:100%;"></td>
+    <td><input type="number" class="watch-port" value="${t.port != null ? t.port : ''}" placeholder="leer = Ping" min="1" max="65535" style="width:100%;"></td>
+    <td><button type="button" class="watch-del">Entfernen</button></td>
+  `;
+  tr.querySelector('.watch-del').addEventListener('click', () => tr.remove());
+  return tr;
+}
+
+function loadWatchTargets(list) {
+  const tbody = document.querySelector('#watch-table tbody');
+  tbody.innerHTML = '';
+  for (const t of (list || [])) tbody.appendChild(watchRow(t));
+}
+
+async function saveWatchTargets() {
+  const statusEl = document.getElementById('watch-status');
+  const rows = [...document.querySelectorAll('#watch-table tbody tr')];
+  const targets = [];
+  for (const tr of rows) {
+    const host = tr.querySelector('.watch-host').value.trim();
+    if (!host) continue;
+    const name = tr.querySelector('.watch-name').value.trim() || host;
+    const portRaw = tr.querySelector('.watch-port').value.trim();
+    const port = portRaw ? Number(portRaw) : null;
+    targets.push({ name, host, port: Number.isFinite(port) && port > 0 ? port : null });
+  }
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ watch_targets: targets }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    statusEl.innerHTML = '<span class="badge ok">Gespeichert (' + targets.length + ' Ziel(e)) - Überwachung läuft ab sofort</span>';
+  } catch (e) {
+    statusEl.innerHTML = '<span class="badge fail">Fehler: ' + e.message + '</span>';
+  }
+  setTimeout(() => { statusEl.textContent = ''; }, 5000);
+}
+
+document.getElementById('watch-add-btn').addEventListener('click', () => {
+  document.querySelector('#watch-table tbody').appendChild(watchRow({}));
+});
+document.getElementById('watch-save-btn').addEventListener('click', saveWatchTargets);
+
+async function exportSettings() {
+  const statusEl = document.getElementById('backup-status');
+  try {
+    const res = await fetch('/api/settings/export');
+    const data = await res.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.download = `nightmarecatcher-einstellungen-${stamp}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    statusEl.innerHTML = '<span class="badge ok">Sicherung heruntergeladen</span>';
+  } catch (e) {
+    statusEl.innerHTML = '<span class="badge fail">Export fehlgeschlagen: ' + e.message + '</span>';
+  }
+  setTimeout(() => { statusEl.textContent = ''; }, 5000);
+}
+
+async function importSettings(file) {
+  const statusEl = document.getElementById('backup-status');
+  try {
+    const text = await file.text();
+    const payload = JSON.parse(text);
+    const res = await fetch('/api/settings/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const result = await res.json();
+    statusEl.innerHTML = result.success
+      ? '<span class="badge ok">' + result.message + '</span>'
+      : '<span class="badge fail">' + result.message + '</span>';
+    if (result.success) setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    statusEl.innerHTML = '<span class="badge fail">Import fehlgeschlagen: ' + e.message + '</span>';
+  }
+}
+
+document.getElementById('export-btn').addEventListener('click', exportSettings);
+document.getElementById('import-btn').addEventListener('click', () => document.getElementById('import-file').click());
+document.getElementById('import-file').addEventListener('change', ev => {
+  if (ev.target.files.length > 0) importSettings(ev.target.files[0]);
+  ev.target.value = '';
+});
+
 let settingsLoaded = false;
 
 async function loadSettings() {
@@ -310,6 +439,7 @@ async function loadSettings() {
       el.value = s[id] != null ? s[id] : '';
     }
   }
+  loadWatchTargets(s.watch_targets);
 }
 
 function collectPayload() {

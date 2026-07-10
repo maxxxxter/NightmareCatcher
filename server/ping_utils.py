@@ -2,8 +2,23 @@ from __future__ import annotations
 
 import platform
 import re
+import socket
 import subprocess
+import time
 from typing import Optional
+
+
+def tcp_check(host: str, port: int, timeout_s: float = 2.0) -> Optional[float]:
+    """TCP-Verbindungstest: misst, wie schnell der Dienst auf host:port
+    antwortet. Gibt die Zeit in ms zurück oder None, wenn der Dienst nicht
+    erreichbar ist. Prüft damit die Anwendung selbst (z.B. Butler21-Server),
+    nicht nur die Netzwerk-Erreichbarkeit des Geräts."""
+    start = time.perf_counter()
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout_s):
+            return round((time.perf_counter() - start) * 1000, 1)
+    except OSError:
+        return None
 
 
 def ping_once(ip: str, timeout_ms: int = 1000) -> Optional[float]:

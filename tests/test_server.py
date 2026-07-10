@@ -130,3 +130,97 @@ def test_mail_report_empty(fresh):
     subject, body = mailer.build_report([], 0, 100)
     assert "keine" in subject.lower()
     assert "NightmareCatcher" in subject
+
+
+# --- v1.3.0: Geräte-Wächter, Roaming, Heatmap -------------------------------
+
+def _load_main(fresh, monkeypatch):
+    """main.py frisch laden (nutzt die Test-DB aus dem fresh-Fixture)."""
+    monkeypatch.setenv("NETDIAG_CONFIG", "nicht_vorhanden.yaml")
+    import main
+    importlib.reload(main)
+    return main
+
+
+def test_watch_targets_built_from_settings(fresh, monkeypatch):
+    db, settings = fresh
+    main = _load_main(fresh, monkeypatch)
+    s = dict(settings.get_all(mask_secrets=False))
+    s["watch_targets"] = [
+        {"name": "IPTV-Box", "host": "192.168.1.60", "port": None},
+        {"name": "Butler21", "host": "192.168.1.10", "port": 8080},
+        {"name": "", "host": "", "port": None},          # leer -> ignoriert
+        {"name": "Kaputt", "host": "1.2.3.4", "port": "abc"},  # Port ungültig -> Ping
+    ]
+    targets = main._check_targets(s)
+    labels = [t["label"] for t in targets]
+    assert labels[:2] == ["Gateway", "Internet"]
+    assert "IPTV-Box" in labels and "Butler21" in labels
+    assert len(targets) == 5  # leeres Ziel wurde übersprungen
+    butler = next(t for t in targets if t["label"] == "Butler21")
+    assert butler["kind"] == "tcp" and butler["port"] == 8080
+    kaputt = next(t for t in targets if t["label"] == "Kaputt")
+    assert kaputt["kind"] == "ping" and kaputt["port"] is None
+
+
+def test_tcp_check_reachable_and_unreachable():
+    import socket
+    import threading
+    from ping_utils import tcp_check
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    threading.Thread(target=lambda: srv.accept(), daemon=True).start()
+    try:
+        rtt = tcp_check("127.0.0.1", port)
+        assert rtt is not None and rtt >= 0
+    finally:
+        srv.close()
+    assert tcp_check("127.0.0.1", 1) is None  # geschlossener Port
+
+
+def test_roaming_pingpong_detection(fresh, monkeypatch):
+    db, settings = fresh
+    main = _load_main(fresh, monkeypatch)
+    s = settings.get_all(mask_secrets=False)
+    names = {"ap-a": "AP EG", "ap-b": "AP 1.OG"}
+
+    def client_on(ap):
+        return [{"mac": "cc:dd", "ap_mac": ap, "is_wired": False, "hostname": "Notebook"}]
+
+    now = 1000.0
+    main._check_roaming(client_on("ap-a"), names, s, now)          # erster Kontakt
+    for i in range(1, 5):                                          # 4 Wechsel in 10 min
+        ap = "ap-b" if i % 2 else "ap-a"
+        main._check_roaming(client_on(ap), names, s, now + i * 60)
+
+    events = db.events_since(0)
+    roams = [e for e in events if e["category"] == "wifi_roaming"]
+    assert roams, "keine Roaming-Ereignisse erzeugt"
+    assert any(e["severity"] == "warning" and "Ping-Pong" in e["message"] for e in roams)
+    assert any("AP EG" in e["message"] for e in roams)
+
+
+def test_heatmap_aggregation(fresh, monkeypatch):
+    import asyncio
+    import time as time_mod
+    db, settings = fresh
+    main = _load_main(fresh, monkeypatch)
+    now = time_mod.time()
+    db.insert_event(now - 60, "server", "warning", "ping_latency", "X", None, "w1", None)
+    db.insert_event(now - 120, "server", "critical", "ping_timeout", "X", None, "c1", None)
+    db.insert_event(now - 180, "user", "info", "user_marker", "X", None, "marker", None)  # zählt nicht
+
+    result = asyncio.run(main.heatmap(days=1))
+    assert result["total"] == 2
+    assert result["max"] >= 1
+    assert sum(v for row in result["cells"] for v in row) == 2
+
+
+def test_version_compare(fresh, monkeypatch):
+    main = _load_main(fresh, monkeypatch)
+    assert main._version_tuple("v1.3.0") == (1, 3, 0)
+    assert main._version_tuple("v1.10.0") > main._version_tuple("v1.9.9")
+    assert main._version_tuple("unsinn") == (0,)

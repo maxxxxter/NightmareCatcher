@@ -129,6 +129,20 @@ Gerätename im UniFi-Controller selbst muss dafür nicht geändert werden. Die
 Zuordnung wird sofort gespeichert und danach im Dashboard sowie in der
 Ereignis-Korrelation verwendet.
 
+## Neu in v1.3.0
+
+- **Geräte-Wächter**: eigene Überwachungsziele (Einstellungen → "Geräte-Wächter"),
+  z.B. die IPTV-Box per Ping oder der Butler21-Server per TCP-Port-Check —
+  erscheinen im Dauerping-Panel und im Latenz-Verlauf.
+- **WLAN-Roaming-Erkennung**: AP-Wechsel aller WLAN-Clients werden protokolliert;
+  häufige Wechsel in kurzer Zeit (Ping-Pong-Roaming) erzeugen eine Warnung.
+- **Störungs-Heatmap**: Häufigkeit aller Warnungen nach Wochentag × Uhrzeit —
+  macht Muster bei sporadischen Fehlern sichtbar.
+- **Speedtest-Automatik**: löst im eingestellten Intervall den Speedtest des
+  UniFi-Gateways aus und warnt, wenn der Durchsatz unter den Schwellwert fällt.
+- **Update-Hinweis** in der Navigation, wenn auf GitHub eine neuere Version liegt.
+- **Einstellungen exportieren/importieren** (Einstellungen → "Sicherung").
+
 ## Dashboard lesen
 
 - **Internetauslastung**: zwei Speedmeter (Download/Upload) mit dem aktuellen

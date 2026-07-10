@@ -113,7 +113,18 @@
 <nav>
   <a href="/" class="active">Dashboard</a>
   <a href="/settings">Einstellungen</a>
+  <a id="update-badge" href="#" target="_blank" rel="noopener" style="display:none; margin-left:auto; color:var(--warn);">Update verfügbar</a>
 </nav>
+<script>
+fetch('/api/version').then(r => r.json()).then(v => {
+  if (v.update_available) {
+    const b = document.getElementById('update-badge');
+    b.textContent = 'Update ' + v.latest + ' verfügbar';
+    b.href = v.release_url || '#';
+    b.style.display = 'inline';
+  }
+}).catch(() => {});
+</script>
 
 <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap;">
   <div>
@@ -180,13 +191,28 @@
     </select>
   </div>
   <div class="card" style="margin-top:12px;">
-    <div style="display:flex; gap:14px; font-size:12px; color:var(--text-muted); margin-bottom:8px;">
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#03a9f4;vertical-align:middle;"></span> Gateway</span>
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#ffb300;vertical-align:middle;"></span> Internet</span>
+    <div style="display:flex; gap:14px; font-size:12px; color:var(--text-muted); margin-bottom:8px; flex-wrap:wrap;">
+      <span id="history-legend" style="display:flex; gap:14px; flex-wrap:wrap;"></span>
       <span style="margin-left:auto;">Punkte = Ausfälle</span>
     </div>
     <canvas id="history-canvas" height="200" style="width:100%; height:200px; display:block;"></canvas>
     <div id="history-empty" class="empty" style="display:none;">Noch keine Verlaufsdaten gesammelt.</div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Störungs-Muster (30 Tage)</h2>
+  <div class="card">
+    <p class="subtitle" style="margin-bottom:10px;" id="heatmap-subtitle">Wann häufen sich Warnungen und kritische Ereignisse? Dunkler = mehr Störungen.</p>
+    <div id="heatmap-grid" style="display:grid; grid-template-columns: 34px repeat(24, 1fr); gap:2px; font-size:10px; color:var(--text-muted);"></div>
+    <div id="heatmap-empty" class="empty" style="display:none;">Noch keine Störungen im Zeitraum &ndash; gut so.</div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Speedtest-Verlauf</h2>
+  <div class="card">
+    <div id="speedtest-content"><p class="empty">Noch keine Speedtest-Ergebnisse. Der automatische Speedtest läuft im eingestellten Intervall (Standard: alle 6 h), sobald die UniFi-Verbindung steht.</p></div>
   </div>
 </div>
 
@@ -247,6 +273,8 @@ const CATEGORY_LABELS = {
   gateway_load: 'Router-Auslastung', gateway_reboot: 'Router-Neustart',
   wan_latency: 'Internet-Latenz', wan_status: 'WAN-Status',
   ping_timeout: 'Ping-Ausfall', ping_latency: 'Ping-Latenz',
+  watch_timeout: 'Wächter: Ausfall', watch_latency: 'Wächter: Latenz',
+  wifi_roaming: 'WLAN-Roaming', speedtest: 'Speedtest',
   controller_log: 'UniFi-Log', controller_alarm: 'UniFi-Alarm',
   device_renamed: 'Namensänderung', user_marker: 'Marker',
 };
@@ -534,13 +562,20 @@ async function markMoment() {
   }
 }
 
+const SERIES_COLORS = ['#03a9f4', '#ffb300', '#4caf50', '#e91e63', '#9c27b0', '#00bcd4', '#ff5722', '#8bc34a'];
+
 function drawHistory(targets) {
   const canvas = document.getElementById('history-canvas');
   const empty = document.getElementById('history-empty');
-  const series = [
-    { name: 'Gateway', color: '#03a9f4', data: targets.Gateway || [] },
-    { name: 'Internet', color: '#ffb300', data: targets.Internet || [] },
-  ];
+  const series = Object.entries(targets).map(([name, data], i) => ({
+    name, data: data || [], color: SERIES_COLORS[i % SERIES_COLORS.length],
+  }));
+  const legend = document.getElementById('history-legend');
+  if (legend) {
+    legend.innerHTML = series.map(s =>
+      `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};vertical-align:middle;"></span> ${s.name}</span>`
+    ).join(' ');
+  }
   const hasData = series.some(s => s.data.length > 1);
   canvas.style.display = hasData ? 'block' : 'none';
   empty.style.display = hasData ? 'none' : 'block';
@@ -588,6 +623,74 @@ function drawHistory(targets) {
   }
 }
 
+async function refreshSpeedtest() {
+  try {
+    const res = await fetch('/api/speedtest');
+    const data = await res.json();
+    const el = document.getElementById('speedtest-content');
+    if (!data.results || data.results.length === 0) return;
+    const latest = data.results[data.results.length - 1];
+    const fmtDate = ts => new Date(ts * 1000).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const rows = data.results.slice(-10).reverse().map(r => {
+      const pct = data.wan_max_mbps ? Math.round(r.down_mbps / data.wan_max_mbps * 100) : null;
+      const warnStyle = pct != null && pct < 50 ? ' style="color:var(--warn);"' : '';
+      return `<tr>
+        <td>${fmtDate(r.ts)}</td>
+        <td${warnStyle}>${r.down_mbps != null ? r.down_mbps.toFixed(0) + ' Mbit/s' : '–'}${pct != null ? ` (${pct}%)` : ''}</td>
+        <td>${r.up_mbps != null ? r.up_mbps.toFixed(0) + ' Mbit/s' : '–'}</td>
+        <td>${r.latency_ms != null ? r.latency_ms + ' ms' : '–'}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `
+      <div class="metric-grid" style="margin-bottom:12px;">
+        <div class="metric"><div class="label">Letzter Download</div><div class="value">${latest.down_mbps != null ? latest.down_mbps.toFixed(0) : '–'} <span style="font-size:12px;">Mbit/s</span></div></div>
+        <div class="metric"><div class="label">Letzter Upload</div><div class="value">${latest.up_mbps != null ? latest.up_mbps.toFixed(0) : '–'} <span style="font-size:12px;">Mbit/s</span></div></div>
+        <div class="metric"><div class="label">Latenz</div><div class="value">${latest.latency_ms != null ? latest.latency_ms : '–'} <span style="font-size:12px;">ms</span></div></div>
+        <div class="metric"><div class="label">Gemessen</div><div class="value" style="font-size:14px;">${fmtDate(latest.ts)}</div></div>
+      </div>
+      <table>
+        <thead><tr><th>Zeitpunkt</th><th>Download</th><th>Upload</th><th>Latenz</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch (e) { console.error('Speedtest-Anzeige fehlgeschlagen', e); }
+}
+
+const WEEKDAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+
+async function refreshHeatmap() {
+  try {
+    const res = await fetch('/api/heatmap');
+    const h = await res.json();
+    const grid = document.getElementById('heatmap-grid');
+    const empty = document.getElementById('heatmap-empty');
+    if (!h.total) {
+      grid.style.display = 'none';
+      empty.style.display = 'block';
+      return;
+    }
+    grid.style.display = 'grid';
+    empty.style.display = 'none';
+    let html = '<div></div>';
+    for (let hr = 0; hr < 24; hr++) {
+      html += `<div style="text-align:center;">${hr % 3 === 0 ? hr : ''}</div>`;
+    }
+    for (let d = 0; d < 7; d++) {
+      html += `<div style="line-height:16px;">${WEEKDAYS[d]}</div>`;
+      for (let hr = 0; hr < 24; hr++) {
+        const v = h.cells[d][hr];
+        const intensity = h.max > 0 ? v / h.max : 0;
+        const bg = v === 0 ? 'var(--gauge-track)'
+          : `rgba(244, 67, 54, ${(0.2 + intensity * 0.8).toFixed(2)})`;
+        html += `<div title="${WEEKDAYS[d]} ${hr}:00-${hr + 1}:00 Uhr: ${v} Störung(en)"
+          style="height:16px; border-radius:3px; background:${bg};"></div>`;
+      }
+    }
+    grid.innerHTML = html;
+    document.getElementById('heatmap-subtitle').textContent =
+      `${h.total} Warnungen/kritische Ereignisse in ${h.days} Tagen · dunkler = mehr Störungen · Spalten = Uhrzeit`;
+  } catch (e) { console.error('Heatmap fehlgeschlagen', e); }
+}
+
 async function refreshHistory() {
   const minutes = document.getElementById('history-range').value;
   try {
@@ -607,8 +710,12 @@ async function refreshAll() {
 
 refreshAll();
 refreshHistory();
+refreshHeatmap();
+refreshSpeedtest();
 setInterval(refreshAll, 5000);
 setInterval(refreshHistory, 60000);
+setInterval(refreshHeatmap, 300000);
+setInterval(refreshSpeedtest, 300000);
 </script>
 
 </body>

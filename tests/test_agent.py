@@ -8,8 +8,18 @@ AGENT = Path(__file__).resolve().parent.parent / "agent"
 sys.path.insert(0, str(AGENT))
 
 
+def _load_agent_ping_utils():
+    """Agent-Modul explizit per Dateipfad laden - server/ und agent/ haben
+    beide ein ping_utils.py, der Name im Modul-Cache wäre sonst mehrdeutig."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("agent_ping_utils", AGENT / "ping_utils.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def test_ping_parsing_german_output(monkeypatch):
-    import ping_utils
+    ping_utils = _load_agent_ping_utils()
 
     class FakeProc:
         returncode = 0

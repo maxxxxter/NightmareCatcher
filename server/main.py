@@ -20,7 +20,7 @@ import db
 import mailer
 import settings
 from config import Config, load_config
-from ping_utils import ping_once
+from ping_utils import ping_once, tcp_check
 from unifi_client import UnifiClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -29,7 +29,12 @@ log = logging.getLogger("netdiag")
 CONFIG_PATH = os.environ.get("NETDIAG_CONFIG", "config.yaml")
 cfg: Config = load_config(CONFIG_PATH)
 
-app = FastAPI(title="NightmareCatcher")
+APP_VERSION = "v1.3.0"
+GITHUB_REPO = "maxxxxter/NightmareCatcher"
+
+app = FastAPI(title="NightmareCatcher", version=APP_VERSION)
+
+_latest_release: dict = {}
 
 FLOOR_LABELS = ["Keller", "EG", "1.OG", "2.OG"]
 
@@ -41,6 +46,8 @@ _ping_samples: dict[str, deque] = {}
 _seen_log_ids: set[str] = set()
 _last_device_names: dict[str, str] = {}
 _device_names_loaded = False
+_client_ap: dict[str, str] = {}
+_client_roams: dict[str, deque] = {}
 
 GATEWAY_TYPES = ("ugw", "udm", "uxg")
 
@@ -277,6 +284,53 @@ def _handle_rename(mac: str, old_name: str, new_name: str,
 WIFI_LOG_HINTS = ("radar", "dfs", "channel", "wireless", "wlan", "roam")
 
 
+ROAM_PINGPONG_COUNT = 4          # ab so vielen AP-Wechseln ...
+ROAM_PINGPONG_WINDOW = 600       # ... innerhalb dieses Fensters (s) wird gewarnt
+
+
+def _check_roaming(clients: list[dict], device_names: dict[str, str],
+                   s: dict, now: float) -> None:
+    """Erkennt AP-Wechsel der WLAN-Clients. Einzelne Wechsel sind normal und
+    werden nur protokolliert (Hinweis); häufige Wechsel in kurzer Zeit
+    ('Ping-Pong-Roaming') sind eine klassische Ursache für sporadische
+    Verbindungsabbrüche und erzeugen eine Warnung."""
+    cooldown = s["event_cooldown_seconds"]
+    for c in clients:
+        if c.get("is_wired"):
+            continue
+        mac = c.get("mac")
+        ap_mac = c.get("ap_mac")
+        if not mac or not ap_mac:
+            continue
+        prev_ap = _client_ap.get(mac)
+        _client_ap[mac] = ap_mac
+        if prev_ap is None or prev_ap == ap_mac:
+            continue
+
+        client_name = c.get("name") or c.get("hostname") or mac
+        old_ap = device_names.get(prev_ap, prev_ap)
+        new_ap = device_names.get(ap_mac, ap_mac)
+        roams = _client_roams.setdefault(mac, deque(maxlen=20))
+        roams.append(now)
+        recent = [t for t in roams if now - t <= ROAM_PINGPONG_WINDOW]
+
+        if len(recent) >= ROAM_PINGPONG_COUNT:
+            if _should_fire((mac, "roam_pingpong"), cooldown):
+                db.insert_event(
+                    now, "unifi", "warning", "wifi_roaming", client_name, None,
+                    f"Ping-Pong-Roaming: '{client_name}' wechselte {len(recent)}x in "
+                    f"{ROAM_PINGPONG_WINDOW // 60} min den Access Point (zuletzt "
+                    f"'{old_ap}' → '{new_ap}') - typische Ursache für Verbindungsabbrüche",
+                    {"mac": mac, "roams": len(recent)},
+                )
+        else:
+            db.insert_event(
+                now, "unifi", "info", "wifi_roaming", client_name, None,
+                f"'{client_name}' wechselte den Access Point: '{old_ap}' → '{new_ap}'",
+                {"mac": mac},
+            )
+
+
 def _scan_controller_logs(ctrl_events: list[dict], alarms: list[dict], now: float,
                           include_wifi: bool = True) -> None:
     """Durchsucht Controller-Logs und Alarme nach möglichen Fehlerquellen und
@@ -453,6 +507,13 @@ async def unifi_poll_loop() -> None:
                     _scan_controller_logs(ctrl_events, alarms, now, include_wifi=s["monitor_wifi"])
                 except Exception as e:
                     log.debug("Log-/Alarm-Abfrage fehlgeschlagen: %s", e)
+
+            if s["monitor_wifi"]:
+                try:
+                    clients = await client.get_clients()
+                    _check_roaming(clients, _last_device_names, s, now)
+                except Exception as e:
+                    log.debug("Client-Abfrage fehlgeschlagen: %s", e)
         except Exception as e:
             log.warning("UniFi-Abfrage fehlgeschlagen: %s", e)
 
@@ -484,40 +545,85 @@ async def throughput_poll_loop() -> None:
         await asyncio.sleep(3)
 
 
+def _check_targets(s: dict) -> list[dict]:
+    """Alle Dauer-Überwachungsziele: die zwei festen Ping-Ziele plus die frei
+    konfigurierten Geräte-Wächter (Ping oder TCP-Dienst-Check)."""
+    targets = [
+        {"label": "Gateway", "host": s["ping_target_local"], "port": None,
+         "warn": s["ping_local_warn_ms"], "crit": s["ping_local_crit_ms"],
+         "monitor_key": "monitor_ping", "kind": "ping"},
+        {"label": "Internet", "host": s["ping_target_internet"], "port": None,
+         "warn": s["ping_internet_warn_ms"], "crit": s["ping_internet_crit_ms"],
+         "monitor_key": "monitor_ping", "kind": "ping"},
+    ]
+    for t in (s.get("watch_targets") or []):
+        host = str(t.get("host") or "").strip()
+        if not host:
+            continue
+        port = t.get("port") or None
+        try:
+            port = int(port) if port else None
+        except (TypeError, ValueError):
+            port = None
+        targets.append({
+            "label": str(t.get("name") or host).strip()[:40],
+            "host": host, "port": port,
+            "warn": s["watch_warn_ms"], "crit": s["watch_crit_ms"],
+            "monitor_key": "monitor_watch",
+            "kind": "tcp" if port else "ping",
+        })
+    return targets
+
+
+def _run_check(t: dict) -> Optional[float]:
+    if t["kind"] == "tcp":
+        return tcp_check(t["host"], t["port"])
+    return ping_once(t["host"])
+
+
 async def server_ping_loop() -> None:
     """Dauerping vom Server aus: kurzer Takt (Standard 2 s), damit auch kurze
-    Lags sichtbar werden. Timeouts und Latenzspitzen erzeugen sofort ein Ereignis."""
+    Lags sichtbar werden. Prüft neben Gateway/Internet auch die frei
+    konfigurierten Geräte-Wächter (z.B. IPTV-Box per Ping, Butler21-Server per
+    TCP-Dienst-Check). Timeouts und Latenzspitzen erzeugen sofort ein Ereignis."""
     while True:
         s = settings.get_all(mask_secrets=False)
-        targets = [
-            ("Gateway", s["ping_target_local"], s["ping_local_warn_ms"], s["ping_local_crit_ms"]),
-            ("Internet", s["ping_target_internet"], s["ping_internet_warn_ms"], s["ping_internet_crit_ms"]),
-        ]
-        results = await asyncio.gather(
-            *[asyncio.to_thread(ping_once, ip) for _, ip, _, _ in targets]
-        )
+        targets = _check_targets(s)
+        results = await asyncio.gather(*[asyncio.to_thread(_run_check, t) for t in targets])
         now = time.time()
         cooldown = s["event_cooldown_seconds"]
         history_samples: dict[str, Optional[float]] = {}
-        for (label, ip, warn, crit), rtt in zip(targets, results):
+        active_labels = {t["label"] for t in targets}
+        for stale in set(_ping_samples) - active_labels:
+            del _ping_samples[stale]  # entfernte Wächter-Ziele nicht weiter anzeigen
+
+        for t, rtt in zip(targets, results):
+            label, host, port = t["label"], t["host"], t["port"]
+            target_desc = f"{host}:{port}" if port else host
+            check_desc = "Dienst-Check" if t["kind"] == "tcp" else "Dauerping"
             dq = _ping_samples.setdefault(label, deque(maxlen=150))
             dq.append({"ts": now, "rtt": rtt})
             history_samples[label] = rtt
-            if not s["monitor_ping"]:
+            if not s[t["monitor_key"]]:
                 continue  # Messung/Anzeige läuft weiter, nur keine Ereignisse
+            is_watch = t["monitor_key"] == "monitor_watch"
             if rtt is None:
                 if _should_fire(("srvping", label, "timeout"), cooldown):
                     db.insert_event(
-                        now, "server", "critical", "ping_timeout", "Diagnose-Server", None,
-                        f"Dauerping zu {label} ({ip}): Antwort ausgeblieben (Timeout)", None,
+                        now, "server", "critical",
+                        "watch_timeout" if is_watch else "ping_timeout",
+                        label if is_watch else "Diagnose-Server", None,
+                        f"{check_desc} zu {label} ({target_desc}): keine Antwort", None,
                     )
             else:
-                level = _grade(rtt, warn, crit)
+                level = _grade(rtt, t["warn"], t["crit"])
                 if level in ("warning", "critical") and _should_fire(("srvping", label, "latency"), cooldown):
                     db.insert_event(
-                        now, "server", level, "ping_latency", "Diagnose-Server", None,
-                        f"Dauerping zu {label} ({ip}): Latenzspitze {rtt:.0f} ms "
-                        f"(Warnung ab {warn} ms)",
+                        now, "server", level,
+                        "watch_latency" if is_watch else "ping_latency",
+                        label if is_watch else "Diagnose-Server", None,
+                        f"{check_desc} zu {label} ({target_desc}): Latenzspitze {rtt:.0f} ms "
+                        f"(Warnung ab {t['warn']} ms)",
                         {"rtt_ms": rtt},
                     )
         try:
@@ -585,6 +691,83 @@ async def instant_alert_loop() -> None:
             log.warning("Sofort-Alarm fehlgeschlagen: %s", e)
 
 
+async def speedtest_loop() -> None:
+    """Löst im eingestellten Intervall den Speedtest des UniFi-Gateways aus und
+    speichert die Ergebnisse - deckt schleichende Provider-Probleme auf.
+    Intervall 0 = deaktiviert."""
+    while True:
+        await asyncio.sleep(120)
+        s = settings.get_all(mask_secrets=False)
+        interval_h = s["speedtest_interval_hours"] or 0
+        if interval_h <= 0:
+            continue
+        now = time.time()
+        if now - db.last_speedtest_ts() < interval_h * 3600:
+            continue
+        client = await _ensure_unifi_client(s)
+        if client is None:
+            continue
+        try:
+            await client.start_speedtest()
+            log.info("Speedtest am Gateway angestoßen")
+            await asyncio.sleep(90)  # Gateway braucht ~30-60 s für den Test
+
+            devices = await client.get_devices()
+            for dev in devices:
+                if dev.get("type") not in GATEWAY_TYPES:
+                    continue
+                st = dev.get("speedtest-status") or {}
+                rundate = st.get("rundate")
+                down = st.get("xput_download")
+                up = st.get("xput_upload")
+                latency = st.get("latency")
+                if not rundate or down is None:
+                    log.info("Speedtest-Ergebnis noch nicht verfügbar")
+                    break
+                if rundate <= db.last_speedtest_ts():
+                    break  # kein neues Ergebnis (alter Lauf)
+                db.insert_speedtest(rundate, round(down, 1), round(up, 1) if up else None, latency)
+                log.info("Speedtest: %.0f/%.0f Mbit/s, %s ms", down, up or 0, latency)
+
+                warn_pct = s["speedtest_warn_percent"] or 0
+                wan_max = s["wan_max_mbps"] or 0
+                if warn_pct > 0 and wan_max > 0 and down < wan_max * warn_pct / 100:
+                    if _should_fire(("speedtest", "slow"), s["event_cooldown_seconds"]):
+                        db.insert_event(
+                            time.time(), "unifi", "warning", "speedtest", "Gateway", None,
+                            f"Speedtest: nur {down:.0f} Mbit/s Download - weniger als "
+                            f"{warn_pct}% der Anschluss-Bandbreite ({wan_max} Mbit/s). "
+                            f"Deutet auf ein Provider- oder Uplink-Problem hin",
+                            {"down_mbps": down, "up_mbps": up, "latency_ms": latency},
+                        )
+                break
+        except Exception as e:
+            log.warning("Speedtest fehlgeschlagen: %s", e)
+
+
+async def update_check_loop() -> None:
+    """Prüft täglich auf GitHub, ob eine neuere Version veröffentlicht wurde.
+    Rein informativ - das Dashboard zeigt dann einen dezenten Hinweis."""
+    import httpx as _httpx
+    while True:
+        try:
+            async with _httpx.AsyncClient(timeout=10.0) as hc:
+                resp = await hc.get(
+                    f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                    headers={"Accept": "application/vnd.github+json"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    _latest_release.update({
+                        "tag": data.get("tag_name"),
+                        "url": data.get("html_url"),
+                        "checked": time.time(),
+                    })
+        except Exception as e:
+            log.debug("Update-Check fehlgeschlagen: %s", e)
+        await asyncio.sleep(24 * 3600)
+
+
 async def prune_loop() -> None:
     """Stündliche Datenbank-Bereinigung, damit die Datei nicht unbegrenzt wächst."""
     while True:
@@ -605,6 +788,8 @@ async def lifespan(_app: FastAPI):
         asyncio.create_task(server_ping_loop()),
         asyncio.create_task(mail_report_loop()),
         asyncio.create_task(instant_alert_loop()),
+        asyncio.create_task(speedtest_loop()),
+        asyncio.create_task(update_check_loop()),
         asyncio.create_task(prune_loop()),
     ]
     try:
@@ -688,9 +873,11 @@ CATEGORY_TOGGLE = {
     "packet_loss": "monitor_agents", "jitter": "monitor_agents", "disconnect": "monitor_agents",
     "port_errors": "monitor_ports", "device_offline": "monitor_ports",
     "wifi_quality": "monitor_wifi", "wifi_congestion": "monitor_wifi",
+    "wifi_roaming": "monitor_wifi",
     "gateway_load": "monitor_gateway", "gateway_reboot": "monitor_gateway",
     "wan_latency": "monitor_wan", "wan_status": "monitor_wan",
     "ping_timeout": "monitor_ping", "ping_latency": "monitor_ping",
+    "watch_timeout": "monitor_watch", "watch_latency": "monitor_watch",
     "controller_log": "monitor_controller_logs", "controller_alarm": "monitor_controller_logs",
 }
 
@@ -725,20 +912,18 @@ async def health_summary() -> dict:
             if d["level"] in ("warning", "critical"):
                 bump(d["level"], f"{d['device_name']}: {d['target_label']} auffällig")
 
-    if s["monitor_ping"]:
-        ping_meta = {
-            "Gateway": (s["ping_local_warn_ms"], s["ping_local_crit_ms"]),
-            "Internet": (s["ping_internet_warn_ms"], s["ping_internet_crit_ms"]),
-        }
-        for label, (warn, crit) in ping_meta.items():
-            samples = _ping_samples.get(label)
-            if not samples:
-                continue
-            current = samples[-1]["rtt"]
-            if current is None:
-                bump("critical", f"Dauerping {label}: keine Antwort")
-            else:
-                bump(_grade(current, warn, crit), f"Dauerping {label}: {current:.0f} ms")
+    for t in _check_targets(s):
+        if not s[t["monitor_key"]]:
+            continue
+        samples = _ping_samples.get(t["label"])
+        if not samples:
+            continue
+        current = samples[-1]["rtt"]
+        kind = "Dienst-Check" if t["kind"] == "tcp" else "Dauerping"
+        if current is None:
+            bump("critical", f"{kind} {t['label']}: keine Antwort")
+        else:
+            bump(_grade(current, t["warn"], t["crit"]), f"{kind} {t['label']}: {current:.0f} ms")
 
     levels = _gateway_health.get("levels", {})
     if s["monitor_gateway"]:
@@ -779,12 +964,11 @@ async def health_summary() -> dict:
 @app.get("/api/server-pings")
 async def server_pings() -> list[dict]:
     s = settings.get_all(mask_secrets=False)
-    meta = {
-        "Gateway": (s["ping_target_local"], s["ping_local_warn_ms"], s["ping_local_crit_ms"]),
-        "Internet": (s["ping_target_internet"], s["ping_internet_warn_ms"], s["ping_internet_crit_ms"]),
-    }
     result = []
-    for label, (ip, warn, crit) in meta.items():
+    for t in _check_targets(s):
+        label = t["label"]
+        ip = f"{t['host']}:{t['port']}" if t["port"] else t["host"]
+        warn, crit = t["warn"], t["crit"]
         samples = list(_ping_samples.get(label, []))
         rtts = [x["rtt"] for x in samples if x["rtt"] is not None]
         losses = sum(1 for x in samples if x["rtt"] is None)
@@ -804,15 +988,42 @@ async def server_pings() -> list[dict]:
 
 @app.get("/api/history")
 async def history(minutes: int = 1440) -> dict:
-    """Ping-Verlauf (Standard: letzte 24 h) für die Diagramme im Dashboard."""
+    """Ping-/Dienst-Verlauf (Standard: letzte 24 h) für die Diagramme im
+    Dashboard - inklusive aller Geräte-Wächter-Ziele."""
+    s = settings.get_all(mask_secrets=False)
     since = time.time() - minutes * 60
     return {
         "minutes": minutes,
         "targets": {
-            "Gateway": db.ping_history("Gateway", since),
-            "Internet": db.ping_history("Internet", since),
+            t["label"]: db.ping_history(t["label"], since)
+            for t in _check_targets(s)
         },
     }
+
+
+@app.get("/api/speedtest")
+async def speedtest_results(days: int = 7) -> dict:
+    s = settings.get_all(mask_secrets=False)
+    results = db.speedtest_history(time.time() - days * 86400)
+    return {"results": results, "wan_max_mbps": s["wan_max_mbps"],
+            "interval_hours": s["speedtest_interval_hours"]}
+
+
+@app.get("/api/heatmap")
+async def heatmap(days: int = 30) -> dict:
+    """Störungs-Muster: Anzahl Warnungen/kritischer Ereignisse je Wochentag und
+    Stunde (lokale Zeit). Macht sichtbar, ob sich Lags z.B. abends häufen."""
+    since = time.time() - days * 86400
+    cells = [[0] * 24 for _ in range(7)]  # [Wochentag Mo=0][Stunde]
+    total = 0
+    for e in db.events_since(since):
+        if e["severity"] not in ("warning", "critical"):
+            continue
+        lt = time.localtime(e["ts"])
+        cells[lt.tm_wday][lt.tm_hour] += 1
+        total += 1
+    return {"days": days, "cells": cells, "total": total,
+            "max": max((v for row in cells for v in row), default=0)}
 
 
 @app.post("/api/mark")
@@ -873,6 +1084,52 @@ async def floors() -> list[str]:
 @app.get("/api/settings")
 async def get_settings() -> dict:
     return settings.get_all(mask_secrets=True)
+
+
+def _version_tuple(tag: str) -> tuple:
+    try:
+        return tuple(int(x) for x in tag.lstrip("v").split("."))
+    except (ValueError, AttributeError):
+        return (0,)
+
+
+@app.get("/api/version")
+async def version_info() -> dict:
+    latest = _latest_release.get("tag")
+    return {
+        "current": APP_VERSION,
+        "latest": latest,
+        "update_available": bool(latest) and _version_tuple(latest) > _version_tuple(APP_VERSION),
+        "release_url": _latest_release.get("url"),
+    }
+
+
+@app.get("/api/settings/export")
+async def export_settings() -> dict:
+    """Alle Einstellungen als Sicherung (inkl. Zugangsdaten im Klartext -
+    Datei entsprechend sorgsam aufbewahren)."""
+    return {
+        "nightmarecatcher_settings": settings.get_all(mask_secrets=False),
+        "floor_map": db.get_floor_entries(),
+        "exported_at": time.time(),
+        "app_version": APP_VERSION,
+    }
+
+
+@app.post("/api/settings/import")
+async def import_settings(payload: dict = Body(...)) -> dict:
+    data = payload.get("nightmarecatcher_settings")
+    if not isinstance(data, dict):
+        return {"success": False, "message": "Keine gültige NightmareCatcher-Sicherungsdatei."}
+    settings.update(data)
+    floor_map = payload.get("floor_map")
+    if isinstance(floor_map, dict):
+        for mac, entry in floor_map.items():
+            if isinstance(entry, dict):
+                db.set_device_floor(mac, entry.get("floor") or None,
+                                    source=entry.get("source") or "manual")
+    return {"success": True,
+            "message": f"{len(data)} Einstellung(en) importiert. Seite neu laden, um sie zu sehen."}
 
 
 @app.get("/api/settings/defaults")

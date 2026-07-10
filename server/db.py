@@ -72,6 +72,15 @@ CREATE TABLE IF NOT EXISTS ping_history (
     rtt_ms REAL
 );
 CREATE INDEX IF NOT EXISTS idx_ping_history_ts ON ping_history(target, ts);
+
+CREATE TABLE IF NOT EXISTS speedtest_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    down_mbps REAL,
+    up_mbps REAL,
+    latency_ms REAL
+);
+CREATE INDEX IF NOT EXISTS idx_speedtest_ts ON speedtest_history(ts);
 """
 
 _MISSING = object()
@@ -265,6 +274,30 @@ def ping_history(target: str, since_ts: float, max_points: int = 300) -> list[di
     return result
 
 
+def insert_speedtest(ts: float, down_mbps, up_mbps, latency_ms) -> None:
+    with _lock:
+        _conn.execute(
+            "INSERT INTO speedtest_history (ts, down_mbps, up_mbps, latency_ms) VALUES (?, ?, ?, ?)",
+            (ts, down_mbps, up_mbps, latency_ms),
+        )
+        _conn.commit()
+
+
+def speedtest_history(since_ts: float) -> list[dict]:
+    with _lock:
+        rows = _conn.execute(
+            "SELECT ts, down_mbps, up_mbps, latency_ms FROM speedtest_history "
+            "WHERE ts >= ? ORDER BY ts ASC", (since_ts,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def last_speedtest_ts() -> float:
+    with _lock:
+        row = _conn.execute("SELECT MAX(ts) AS m FROM speedtest_history").fetchone()
+    return row["m"] or 0.0
+
+
 def prune(now: float) -> None:
     """Alte Daten entfernen, damit die Datenbank nicht unbegrenzt wächst.
     UniFi-Snapshots (große Roh-JSONs, nur der jeweils letzte wird angezeigt): 24 h.
@@ -272,6 +305,7 @@ def prune(now: float) -> None:
     with _lock:
         _conn.execute("DELETE FROM unifi_snapshots WHERE ts < ?", (now - 24 * 3600,))
         _conn.execute("DELETE FROM ping_history WHERE ts < ?", (now - 3 * 86400,))
+        _conn.execute("DELETE FROM speedtest_history WHERE ts < ?", (now - 90 * 86400,))
         _conn.execute("DELETE FROM measurements WHERE ts < ?", (now - 14 * 86400,))
         _conn.execute("DELETE FROM events WHERE ts < ?", (now - 90 * 86400,))
         _conn.commit()
