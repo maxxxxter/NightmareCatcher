@@ -57,7 +57,7 @@ Fertig gebaute Programme, kein Python nötig:
 
 Beide EXEs legen ihre Daten (`netdiag.db` bzw. `config.yaml`) im Ordner ab,
 aus dem sie gestartet werden. Die Datenbank bereinigt sich automatisch
-(UniFi-Rohdaten nach 24 h, Messwerte nach 14 Tagen, Ereignisse nach 90 Tagen).
+(nicht mehr gemeldete UniFi-Geräte nach 24 h, Messwerte nach 14 Tagen, Ereignisse nach 90 Tagen).
 Neu bauen nach Codeänderungen: `server\build_exe.ps1` bzw. `agent\build_exe.ps1`.
 
 ## Einrichtung aus dem Quellcode (Alternative zu den EXEs)
@@ -128,6 +128,30 @@ WLAN-Access-Points**. Über ein Dropdown pro Gerät die Etage zuweisen; der
 Gerätename im UniFi-Controller selbst muss dafür nicht geändert werden. Die
 Zuordnung wird sofort gespeichert und danach im Dashboard sowie in der
 Ereignis-Korrelation verwendet.
+
+## Neu in v1.4.0
+
+- **Zugangsschutz**: Einstellungen, Zugangsdaten-Export und Verbindungstests
+  sind von anderen Geräten im Netz nur noch mit einem **Admin-Passwort**
+  erreichbar (Einstellungen → "Zugangsschutz"). Am Server-PC selbst geht es
+  weiterhin ohne. Solange kein Passwort vergeben ist, sind die Einstellungen
+  nur am Server-PC änderbar. Dashboard und Agent-Meldungen bleiben offen.
+  Verbindungstests schicken gespeicherte Passwörter nur noch an den
+  gespeicherten Controller bzw. SMTP-Server.
+- **Keine verlorenen Messwerte mehr**: Erreicht ein Agent den Server nicht,
+  speichert er die Messungen in `agent-outbox.db` zwischen und liefert sie
+  nach, sobald der Server wieder erreichbar ist. Der Ausfall selbst erscheint
+  als Ereignis "Verbindungsabbruch" (mit Dauer) in der Zeitleiste.
+- **Lückenlose Messung**: der Agent misst alle Ziele gleichzeitig, das
+  Intervall zählt ab Messbeginn - kurze Lags rutschen nicht mehr durch. Die
+  Agent-EXE lässt keine Konsolenfenster mehr aufblitzen.
+- **Schlankere Datenbank**: statt bei jedem Poll das komplette Roh-JSON aller
+  UniFi-Geräte zu speichern, wird nur noch der letzte Stand je Gerät gehalten
+  (alte Daten werden beim ersten Start automatisch übernommen und die Datei
+  verkleinert). SQLite läuft im WAL-Modus.
+- **Weniger Last am Router**: das Speedmeter liest die WAN-Rate aus dem
+  kleinen Gesundheitsstatus statt alle 3 s die komplette Geräteliste abzurufen;
+  das Intervall ist einstellbar (Einstellungen → "Internetauslastung").
 
 ## Neu in v1.3.0
 

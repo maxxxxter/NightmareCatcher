@@ -11,11 +11,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, FastAPI
+from fastapi import Body, Depends, FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import auth
 import autostart
 import db
 import mailer
@@ -30,7 +31,7 @@ log = logging.getLogger("netdiag")
 CONFIG_PATH = os.environ.get("NETDIAG_CONFIG", "config.yaml")
 cfg: Config = load_config(CONFIG_PATH)
 
-APP_VERSION = "v1.3.0"
+APP_VERSION = "v1.4.0"
 GITHUB_REPO = "maxxxxter/NightmareCatcher"
 
 app = FastAPI(title="NightmareCatcher", version=APP_VERSION)
@@ -414,7 +415,7 @@ async def unifi_poll_loop() -> None:
                         entry = {"floor": guessed, "source": "auto"}
                 floor = (entry or {}).get("floor") or None
 
-                db.insert_unifi_snapshot(now, mac, name, dtype, state, dev)
+                db.upsert_unifi_device(now, mac, name, dtype, state, dev)
 
                 if state is not None and state != 1 and s["monitor_ports"]:
                     if _should_fire((mac, "device_offline"), cooldown):
@@ -519,29 +520,55 @@ async def unifi_poll_loop() -> None:
         await asyncio.sleep(s["unifi_poll_interval_seconds"])
 
 
+def _wan_rates_from_health(health: list[dict]) -> Optional[tuple[float, float]]:
+    """Aktuelle WAN-Rate (Bytes/s) aus dem Gesundheitsstatus - eine kleine
+    Antwort statt der kompletten Geräteliste aller Switches und APs."""
+    for sub in ("wan", "www"):
+        h = next((x for x in health if x.get("subsystem") == sub), None)
+        if h and (h.get("rx_bytes-r") is not None or h.get("tx_bytes-r") is not None):
+            return float(h.get("rx_bytes-r") or 0), float(h.get("tx_bytes-r") or 0)
+    return None
+
+
+def _wan_rates_from_devices(devices: list[dict]) -> Optional[tuple[float, float]]:
+    for dev in devices:
+        wan = dev.get("wan1") or dev.get("wan2")
+        if wan:
+            return float(wan.get("rx_bytes-r") or 0), float(wan.get("tx_bytes-r") or 0)
+    return None
+
+
 async def throughput_poll_loop() -> None:
-    """Separater, schnellerer Takt nur für die Internet-Auslastung (Speedmeter)."""
+    """Separater, schnellerer Takt nur für die Internet-Auslastung (Speedmeter).
+    Fragt bewusst nur den kleinen Gesundheitsstatus ab, damit das Werkzeug den
+    Router, den es überwacht, nicht selbst belastet. Liefert die Firmware dort
+    keine Raten, wird ersatzweise (seltener) die Geräteliste genutzt."""
+    use_devices = False
     while True:
         s = settings.get_all(mask_secrets=False)
+        interval = max(2, s["throughput_poll_seconds"] or 5)
         client = await _ensure_unifi_client(s)
         if client is not None:
             try:
-                devices = await client.get_devices()
-                for dev in devices:
-                    wan = dev.get("wan1") or dev.get("wan2")
-                    if not wan:
-                        continue
-                    rx = wan.get("rx_bytes-r") or 0
-                    tx = wan.get("tx_bytes-r") or 0
+                rates = None
+                if not use_devices:
+                    rates = _wan_rates_from_health(await client.get_health())
+                    if rates is None:
+                        use_devices = True
+                        log.info("WAN-Rate nicht im Gesundheitsstatus - nutze Geräteliste für das Speedmeter")
+                if rates is None:
+                    rates = _wan_rates_from_devices(await client.get_devices())
+                if rates is not None:
+                    rx, tx = rates
                     _throughput_history.append({
                         "ts": time.time(),
                         "down_mbps": round(rx * 8 / 1_000_000, 2),
                         "up_mbps": round(tx * 8 / 1_000_000, 2),
                     })
-                    break
             except Exception as e:
                 log.debug("Durchsatz-Abfrage fehlgeschlagen: %s", e)
-        await asyncio.sleep(3)
+        # Die Geräteliste ist groß - im Ersatzbetrieb mindestens 15 s Abstand.
+        await asyncio.sleep(max(interval, 15) if use_devices else interval)
 
 
 def _check_targets(s: dict) -> list[dict]:
@@ -846,7 +873,7 @@ async def events(limit: int = 100) -> list[dict]:
 
 @app.get("/api/unifi/devices")
 async def unifi_devices() -> list[dict]:
-    return db.latest_unifi_snapshots()
+    return db.latest_unifi_devices()
 
 
 @app.get("/api/unifi/throughput")
@@ -937,7 +964,7 @@ async def health_summary() -> dict:
         if wan_status and wan_status not in ("ok", "unknown"):
             bump("critical", f"WAN-Status: {wan_status}")
 
-    unifi_devices_list = db.latest_unifi_snapshots()
+    unifi_devices_list = db.latest_unifi_devices()
     if s["monitor_ports"]:
         for d in unifi_devices_list:
             if d["state"] is not None and d["state"] != 1 and now - d["ts"] < 300:
@@ -1046,13 +1073,20 @@ async def mark_moment(payload: dict = Body(default={})) -> dict:
     return {"status": "ok", "ts": now, "context_count": len(context)}
 
 
-@app.post("/api/settings/mail/test")
+@app.post("/api/settings/mail/test", dependencies=[Depends(auth.require_admin)])
 async def test_mail(payload: dict = Body(default={})) -> dict:
     saved = settings.get_all(mask_secrets=False)
     s = dict(saved)
     for key, value in payload.items():
         if key in settings.DEFAULTS and value not in (None, ""):
             s[key] = value
+
+    # Das gespeicherte Passwort nur an den gespeicherten SMTP-Server schicken -
+    # sonst ließe es sich über einen fremden Test-Server abgreifen.
+    if not payload.get("mail_password") and (
+            s["mail_smtp_host"] != saved["mail_smtp_host"]
+            or s["mail_username"] != saved["mail_username"]):
+        s["mail_password"] = ""
 
     if not s["mail_smtp_host"] or not s["mail_to"]:
         return {"success": False, "message": "SMTP-Server und Empfängeradresse erforderlich."}
@@ -1068,7 +1102,7 @@ async def test_mail(payload: dict = Body(default={})) -> dict:
         return {"success": False, "message": f"Versand fehlgeschlagen: {detail}"}
 
 
-@app.put("/api/unifi/floor-map")
+@app.put("/api/unifi/floor-map", dependencies=[Depends(auth.require_admin)])
 async def update_floor_map(payload: dict = Body(...)) -> dict:
     # Änderungen über die GUI sind immer manuell und übersteuern die Automatik -
     # auch das bewusste Entfernen einer Zuordnung (leerer Wert) bleibt bestehen.
@@ -1082,7 +1116,7 @@ async def floors() -> list[str]:
     return FLOOR_LABELS
 
 
-@app.get("/api/settings")
+@app.get("/api/settings", dependencies=[Depends(auth.require_admin)])
 async def get_settings() -> dict:
     return settings.get_all(mask_secrets=True)
 
@@ -1105,7 +1139,7 @@ async def version_info() -> dict:
     }
 
 
-@app.get("/api/settings/export")
+@app.get("/api/settings/export", dependencies=[Depends(auth.require_admin)])
 async def export_settings() -> dict:
     """Alle Einstellungen als Sicherung (inkl. Zugangsdaten im Klartext -
     Datei entsprechend sorgsam aufbewahren)."""
@@ -1117,7 +1151,7 @@ async def export_settings() -> dict:
     }
 
 
-@app.post("/api/settings/import")
+@app.post("/api/settings/import", dependencies=[Depends(auth.require_admin)])
 async def import_settings(payload: dict = Body(...)) -> dict:
     data = payload.get("nightmarecatcher_settings")
     if not isinstance(data, dict):
@@ -1138,28 +1172,43 @@ async def get_settings_defaults() -> dict:
     return settings.get_recommended()
 
 
-@app.get("/api/autostart")
+@app.get("/api/autostart", dependencies=[Depends(auth.require_admin)])
 async def get_autostart() -> dict:
     return {"supported": autostart.is_supported(),
             "enabled": autostart.is_enabled("NightmareCatcher-Server")}
 
 
-@app.put("/api/autostart")
+@app.put("/api/autostart", dependencies=[Depends(auth.require_admin)])
 async def set_autostart(payload: dict = Body(...)) -> dict:
     enabled = autostart.set_enabled("NightmareCatcher-Server", bool(payload.get("enabled")))
     return {"supported": autostart.is_supported(), "enabled": enabled}
 
 
-@app.put("/api/settings")
+@app.put("/api/settings", dependencies=[Depends(auth.require_admin)])
 async def update_settings(payload: dict = Body(...)) -> dict:
     settings.update(payload)
     return settings.get_all(mask_secrets=True)
 
 
+@app.get("/api/admin/status")
+async def admin_status(request: Request) -> dict:
+    return {"password_set": auth.has_password(), "local": auth.is_local(request)}
+
+
+@app.put("/api/admin/password", dependencies=[Depends(auth.require_admin)])
+async def set_admin_password(payload: dict = Body(...)) -> dict:
+    password = str(payload.get("password") or "")
+    if password and len(password) < 6:
+        return {"success": False, "message": "Das Passwort muss mindestens 6 Zeichen lang sein."}
+    auth.set_password(password or None)
+    return {"success": True,
+            "message": "Admin-Passwort gespeichert." if password else "Admin-Passwort entfernt."}
+
+
 _last_unifi_test_ts: float = 0.0
 
 
-@app.post("/api/settings/unifi/test")
+@app.post("/api/settings/unifi/test", dependencies=[Depends(auth.require_admin)])
 async def test_unifi_connection(payload: dict = Body(default={})) -> dict:
     # Mindestabstand zwischen manuellen Tests: jeder Test ist ein echter Login-
     # Versuch am Controller - zu schnelles Wiederholen löst dessen Rate-Limit aus.
@@ -1174,12 +1223,18 @@ async def test_unifi_connection(payload: dict = Body(default={})) -> dict:
     saved = settings.get_all(mask_secrets=False)
     controller_url = payload.get("unifi_controller_url") or saved["unifi_controller_url"]
     username = payload.get("unifi_username") or saved["unifi_username"]
-    password = payload.get("unifi_password") or saved["unifi_password"]
+    password = payload.get("unifi_password")
+    if not password and controller_url.rstrip("/") == (saved["unifi_controller_url"] or "").rstrip("/") \
+            and username == saved["unifi_username"]:
+        # Gespeichertes Passwort nur für den gespeicherten Controller verwenden -
+        # sonst ließe es sich über eine fremde Test-URL abgreifen.
+        password = saved["unifi_password"]
     site = payload.get("unifi_site") or saved["unifi_site"]
     verify_ssl = payload.get("unifi_verify_ssl", saved["unifi_verify_ssl"])
 
     if not controller_url or not username or not password:
-        return {"success": False, "message": "Controller-URL, Nutzername und Passwort erforderlich."}
+        return {"success": False, "message": "Controller-URL, Nutzername und Passwort erforderlich "
+                                             "(bei geänderter URL oder geändertem Nutzer das Passwort neu eingeben)."}
 
     client = UnifiClient(controller_url, username, password, site=site, verify_ssl=verify_ssl)
     try:

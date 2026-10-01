@@ -36,6 +36,7 @@ DEFAULTS: dict = {
     "wifi_cu_crit": 85,
 
     "wan_max_mbps": 500,
+    "throughput_poll_seconds": 5,
 
     "gw_cpu_warn": 70,
     "gw_cpu_crit": 90,
@@ -102,6 +103,7 @@ THRESHOLD_KEYS = {
     "ping_local_warn_ms", "ping_local_crit_ms", "ping_internet_warn_ms", "ping_internet_crit_ms",
     "server_ping_interval_seconds", "unifi_poll_interval_seconds",
     "watch_warn_ms", "watch_crit_ms", "speedtest_interval_hours", "speedtest_warn_percent",
+    "throughput_poll_seconds",
 }
 
 # Merkliste der manuell (über die GUI) geänderten Schlüssel. Nur Werte, die

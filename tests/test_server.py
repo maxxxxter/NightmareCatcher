@@ -224,3 +224,121 @@ def test_version_compare(fresh, monkeypatch):
     assert main._version_tuple("v1.3.0") == (1, 3, 0)
     assert main._version_tuple("v1.10.0") > main._version_tuple("v1.9.9")
     assert main._version_tuple("unsinn") == (0,)
+
+
+# --- Zugangsschutz -----------------------------------------------------------
+
+def _clients(main):
+    from fastapi.testclient import TestClient
+    remote = TestClient(main.app, client=("192.168.1.50", 50000))
+    local = TestClient(main.app, client=("127.0.0.1", 50000))
+    return remote, local
+
+
+def test_settings_locked_remotely_without_password(fresh, monkeypatch):
+    main = _load_main(fresh, monkeypatch)
+    remote, local = _clients(main)
+    assert remote.get("/api/settings").status_code == 403
+    assert remote.get("/api/settings/export").status_code == 403
+    assert local.get("/api/settings").status_code == 200
+    # Dashboard-Daten und Agent-Meldungen bleiben offen
+    assert remote.get("/api/ping").status_code == 200
+    assert remote.post("/api/report", json={"device_name": "PC", "floor": "EG", "ts": 1.0}).status_code == 200
+
+
+def test_admin_password_unlocks_remote_access(fresh, monkeypatch):
+    main = _load_main(fresh, monkeypatch)
+    remote, local = _clients(main)
+    assert local.put("/api/admin/password", json={"password": "kurz"}).json()["success"] is False
+    assert local.put("/api/admin/password", json={"password": "geheim-ü1"}).json()["success"] is True
+    assert remote.get("/api/settings").status_code == 401
+    assert remote.get("/api/settings", headers={"X-Admin-Password": "falsch"}).status_code == 401
+    from urllib.parse import quote
+    ok = remote.get("/api/settings", headers={"X-Admin-Password": quote("geheim-ü1")})
+    assert ok.status_code == 200
+    db, _ = fresh
+    assert "geheim" not in str(db.get_setting("admin_password_hash"))  # nur Hash gespeichert
+
+
+def test_unifi_test_never_sends_saved_password_to_other_url(fresh, monkeypatch):
+    db, settings = fresh
+    main = _load_main(fresh, monkeypatch)
+    settings.update({"unifi_controller_url": "https://192.168.1.1", "unifi_username": "ro",
+                     "unifi_password": "topsecret"})
+    used = []
+
+    class FakeClient:
+        def __init__(self, url, user, password, **kw):
+            used.append((url, password))
+
+        async def get_devices(self):
+            return []
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(main, "UnifiClient", FakeClient)
+    _, local = _clients(main)
+    r = local.post("/api/settings/unifi/test", json={"unifi_controller_url": "https://evil.example"}).json()
+    assert r["success"] is False and used == []
+
+    main._last_unifi_test_ts = 0
+    r = local.post("/api/settings/unifi/test", json={"unifi_controller_url": "https://192.168.1.1/"}).json()
+    assert r["success"] is True and used == [("https://192.168.1.1/", "topsecret")]
+
+
+def test_mail_test_never_sends_saved_password_to_other_host(fresh, monkeypatch):
+    db, settings = fresh
+    main = _load_main(fresh, monkeypatch)
+    settings.update({"mail_smtp_host": "smtp.example.org", "mail_username": "me",
+                     "mail_password": "mailsecret", "mail_to": "me@example.org"})
+    seen = []
+    monkeypatch.setattr(main.mailer, "send_mail", lambda s, subject, body: seen.append(s["mail_password"]))
+    _, local = _clients(main)
+    local.post("/api/settings/mail/test", json={"mail_smtp_host": "smtp.evil.example"})
+    local.post("/api/settings/mail/test", json={})
+    assert seen == ["", "mailsecret"]
+
+
+# --- Datenbank / Router-Last -------------------------------------------------
+
+def test_old_snapshot_table_is_migrated(tmp_path):
+    import json
+    import sqlite3
+    import db
+    path = tmp_path / "alt.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE unifi_snapshots (id INTEGER PRIMARY KEY, ts REAL, device_mac TEXT, "
+                 "device_name TEXT, device_type TEXT, state INTEGER, raw_json TEXT)")
+    for ts, name in ((1.0, "Switch alt"), (2.0, "Switch 1.OG")):
+        conn.execute("INSERT INTO unifi_snapshots (ts, device_mac, device_name, device_type, state, raw_json) "
+                     "VALUES (?, 'aa', ?, 'usw', 1, ?)", (ts, name, json.dumps({"model": "US8", "ip": "10.0.0.2"})))
+    conn.commit()
+    conn.close()
+
+    importlib.reload(db)
+    db.init(str(path))
+    devices = db.latest_unifi_devices()
+    assert len(devices) == 1
+    assert devices[0]["device_name"] == "Switch 1.OG" and devices[0]["model"] == "US8"
+    assert devices[0]["ip"] == "10.0.0.2"
+    assert db.latest_device_names() == {"aa": "Switch 1.OG"}
+    tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "unifi_snapshots" not in tables
+
+
+def test_unifi_device_upsert_keeps_one_row(fresh):
+    db, _ = fresh
+    for ts in (1.0, 2.0, 3.0):
+        db.upsert_unifi_device(ts, "aa", "AP EG", "uap", 1, {"num_sta": int(ts)})
+    devices = db.latest_unifi_devices()
+    assert len(devices) == 1 and devices[0]["ts"] == 3.0 and devices[0]["num_sta"] == 3
+
+
+def test_wan_rates_from_health(fresh, monkeypatch):
+    main = _load_main(fresh, monkeypatch)
+    health = [{"subsystem": "lan"}, {"subsystem": "wan", "rx_bytes-r": 1_000_000, "tx_bytes-r": 250_000}]
+    assert main._wan_rates_from_health(health) == (1_000_000.0, 250_000.0)
+    assert main._wan_rates_from_health([{"subsystem": "wan"}]) is None
+    devices = [{"type": "usw"}, {"type": "udm", "wan1": {"rx_bytes-r": 10, "tx_bytes-r": 5}}]
+    assert main._wan_rates_from_devices(devices) == (10.0, 5.0)

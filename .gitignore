@@ -8,4 +8,6 @@ build/
 *.spec
 dist/
 agent.db
+agent-outbox.db
+netdiag.db-*
 .pytest_cache/
