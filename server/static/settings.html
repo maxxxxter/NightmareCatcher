@@ -87,6 +87,8 @@
 <h1>NightmareCatcher &middot; Einstellungen</h1>
 <p class="subtitle">Alle Änderungen werden dauerhaft in der Server-Datenbank gespeichert &ndash; kein Bearbeiten von Konfigurationsdateien nötig.</p>
 
+<div id="auth-banner" class="card" style="display:none; border-color: var(--crit);"></div>
+
 <div class="card">
   <h2>UniFi-Verbindung</h2>
   <p class="hint">Zugangsdaten eines lokalen, schreibgeschützten UniFi-Nutzers.</p>
@@ -181,6 +183,7 @@
   <p class="hint">Referenzwert für die Speedmeter-Anzeige im Dashboard (z.B. gebuchte Bandbreite deines Anschlusses).</p>
   <div class="field-grid">
     <div><label for="wan_max_mbps">Anschluss-Bandbreite (Mbit/s)</label><input type="number" step="1" id="wan_max_mbps"></div>
+    <div><label for="throughput_poll_seconds">Speedmeter-Abfrage alle (s)</label><input type="number" step="1" min="2" id="throughput_poll_seconds"></div>
     <div><label for="speedtest_interval_hours">Speedtest-Intervall (h, 0 = aus)</label><input type="number" step="1" id="speedtest_interval_hours"></div>
     <div><label for="speedtest_warn_percent">Speedtest-Warnung unter (% der Bandbreite)</label><input type="number" step="1" id="speedtest_warn_percent"></div>
   </div>
@@ -262,6 +265,21 @@
 </div>
 
 <div class="card">
+  <h2>Zugangsschutz</h2>
+  <p class="hint">Einstellungen und Zugangsdaten sind am Server-PC selbst immer erreichbar. Von anderen Geräten im Netz nur mit diesem Admin-Passwort &ndash; ohne Passwort bleiben sie dort gesperrt. Das Dashboard und die Meldungen der Agenten sind davon nicht betroffen.</p>
+  <div class="field-grid">
+    <div>
+      <label for="admin_password_new">Neues Admin-Passwort (mind. 6 Zeichen)</label>
+      <input type="password" id="admin_password_new" autocomplete="new-password" placeholder="leer lassen und speichern = Passwort entfernen">
+    </div>
+  </div>
+  <div class="actions">
+    <button id="admin-pw-btn" type="button">Passwort speichern</button>
+    <span id="admin-pw-status"></span>
+  </div>
+</div>
+
+<div class="card">
   <h2>Sicherung</h2>
   <p class="hint">Alle Einstellungen (inklusive Zugangsdaten!) als Datei sichern oder aus einer Sicherung wiederherstellen. Die Datei entsprechend sorgsam aufbewahren.</p>
   <div class="actions" style="margin-top:0;">
@@ -282,13 +300,107 @@
 </div>
 
 <script>
+// Zugangsschutz: hängt das Admin-Passwort (falls bekannt) an alle API-Aufrufe
+// und fragt es einmalig ab, wenn der Server es verlangt (HTTP 401).
+const ADMIN_PW_KEY = 'nightmarecatcher_admin_password';
+const _rawFetch = window.fetch.bind(window);
+let _pwPrompt = null;
+let _pwDeclined = false;  // Abfrage abgebrochen -> bis zum Neuladen nicht erneut fragen
+
+function storedAdminPassword() {
+  try { return sessionStorage.getItem(ADMIN_PW_KEY); } catch (e) { return null; }
+}
+
+function askAdminPassword() {
+  if (_pwDeclined) return Promise.resolve(null);
+  if (!_pwPrompt) {
+    _pwPrompt = new Promise(resolve => {
+      const pw = window.prompt('Admin-Passwort für die Einstellungen:');
+      if (pw) { try { sessionStorage.setItem(ADMIN_PW_KEY, pw); } catch (e) { /* egal */ } }
+      else _pwDeclined = true;
+      resolve(pw);
+      setTimeout(() => { _pwPrompt = null; }, 0);
+    });
+  }
+  return _pwPrompt;
+}
+
+function showAuthBanner(text) {
+  const el = document.getElementById('auth-banner');
+  el.textContent = text;
+  el.style.display = 'block';
+}
+
+window.fetch = async (url, opts = {}) => {
+  const send = pw => {
+    const headers = new Headers(opts.headers || {});
+    if (pw) headers.set('X-Admin-Password', encodeURIComponent(pw));
+    return _rawFetch(url, { ...opts, headers });
+  };
+  let usedPw = storedAdminPassword();
+  let res = await send(usedPw);
+  if (res.status === 401) {
+    let current = storedAdminPassword();
+    if (current && current === usedPw) {
+      // Gespeichertes Passwort ist falsch -> verwerfen und neu fragen.
+      try { sessionStorage.removeItem(ADMIN_PW_KEY); } catch (e) { /* egal */ }
+      current = null;
+    }
+    // Hat ein paralleler Aufruf schon ein neues Passwort erfragt, das nutzen.
+    const pw = current || await askAdminPassword();
+    if (pw) res = await send(pw);
+  }
+  if (res.status === 401 || res.status === 403) {
+    try {
+      const body = await res.clone().json();
+      showAuthBanner(body.detail || 'Zugriff verweigert.');
+    } catch (e) { showAuthBanner('Zugriff verweigert.'); }
+  }
+  return res;
+};
+
+async function saveAdminPassword() {
+  const statusEl = document.getElementById('admin-pw-status');
+  const input = document.getElementById('admin_password_new');
+  const pw = input.value;
+  if (!pw && !confirm('Admin-Passwort entfernen? Danach sind die Einstellungen nur noch am Server-PC erreichbar.')) return;
+  try {
+    const res = await fetch('/api/admin/password', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw }),
+    });
+    const result = await res.json();
+    statusEl.innerHTML = '';
+    const badge = document.createElement('span');
+    badge.className = 'badge ' + (result.success ? 'ok' : 'fail');
+    badge.textContent = result.message || result.detail || 'Fehler';
+    statusEl.appendChild(badge);
+    if (result.success) {
+      input.value = '';
+      try { pw ? sessionStorage.setItem(ADMIN_PW_KEY, pw) : sessionStorage.removeItem(ADMIN_PW_KEY); } catch (e) { /* egal */ }
+      loadAdminStatus();
+    }
+  } catch (e) {
+    statusEl.textContent = 'Fehler: ' + e.message;
+  }
+}
+
+async function loadAdminStatus() {
+  try {
+    const st = await (await fetch('/api/admin/status')).json();
+    document.getElementById('admin_password_new').placeholder = st.password_set
+      ? 'Passwort ist gesetzt – neues eingeben oder leer lassen zum Entfernen'
+      : 'Noch kein Passwort – nur am Server-PC änderbar';
+  } catch (e) { /* still */ }
+}
+
 const FIELD_IDS = [
   'unifi_enabled', 'unifi_controller_url', 'unifi_username', 'unifi_password', 'unifi_site',
   'unifi_poll_interval_seconds', 'unifi_verify_ssl',
   'loss_percent_warn', 'loss_percent_crit', 'jitter_ms_warn', 'jitter_ms_crit',
   'unifi_port_error_delta_warn', 'wifi_satisfaction_warn', 'wifi_satisfaction_crit',
   'wifi_cu_warn', 'wifi_cu_crit', 'correlation_window_seconds', 'stale_after_seconds',
-  'event_cooldown_seconds', 'wan_max_mbps',
+  'event_cooldown_seconds', 'wan_max_mbps', 'throughput_poll_seconds',
   'gw_cpu_warn', 'gw_cpu_crit', 'gw_mem_warn', 'gw_mem_crit',
   'gw_temp_warn', 'gw_temp_crit', 'wan_latency_ms_warn', 'wan_latency_ms_crit',
   'server_ping_interval_seconds', 'ping_target_local', 'ping_target_internet',
@@ -619,10 +731,12 @@ document.getElementById('reset-btn').addEventListener('click', resetToDefaults);
 document.getElementById('test-btn').addEventListener('click', testConnection);
 document.getElementById('mail-test-btn').addEventListener('click', testMail);
 document.getElementById('autostart-toggle').addEventListener('change', saveAutostart);
+document.getElementById('admin-pw-btn').addEventListener('click', saveAdminPassword);
 
 loadSettings();
 showRecommended();
 loadAutostart();
+loadAdminStatus();
 loadDevices();
 setInterval(loadDevices, 15000);
 </script>

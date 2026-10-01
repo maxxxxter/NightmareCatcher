@@ -10,6 +10,7 @@ Nutzung:
 from __future__ import annotations
 
 import queue
+import time
 import threading
 import tkinter as tk
 import webbrowser
@@ -19,7 +20,8 @@ import httpx
 
 import agent_settings
 import autostart
-from agent import build_targets, run_cycle
+from agent import OUTBOX_PATH, build_targets, run_cycle, sleep_until_next_cycle
+from outbox import Outbox
 
 FLOORS = ["Keller", "EG", "1.OG", "2.OG"]
 
@@ -329,10 +331,15 @@ class AgentGUI:
 
     def _run_loop(self, cfg: dict, targets: list[tuple[str, str]]) -> None:
         interval = cfg["agent"].get("report_interval_seconds", 10)
-        with httpx.Client(timeout=10.0) as client:
-            while not self.stop_event.is_set():
-                run_cycle(client, cfg, targets, log=self.log_queue.put)
-                self.stop_event.wait(interval)
+        outbox = Outbox(OUTBOX_PATH)
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                while not self.stop_event.is_set():
+                    started = time.time()
+                    run_cycle(client, cfg, targets, log=self.log_queue.put, outbox=outbox)
+                    sleep_until_next_cycle(started, interval, wait=self.stop_event.wait)
+        finally:
+            outbox.close()
         self.log_queue.put("Agent gestoppt.")
 
     # --- Protokoll -------------------------------------------------------------

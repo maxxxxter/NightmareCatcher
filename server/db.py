@@ -42,17 +42,20 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 
-CREATE TABLE IF NOT EXISTS unifi_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+-- Nur der jeweils letzte Stand je UniFi-Gerät, mit den angezeigten Feldern.
+-- (Früher: komplettes Roh-JSON bei jedem Poll -> hunderte MB pro Tag.)
+CREATE TABLE IF NOT EXISTS unifi_devices (
+    device_mac TEXT PRIMARY KEY,
     ts REAL NOT NULL,
-    device_mac TEXT NOT NULL,
     device_name TEXT,
     device_type TEXT,
     state INTEGER,
-    raw_json TEXT
+    model TEXT,
+    uptime INTEGER,
+    satisfaction REAL,
+    num_sta INTEGER,
+    ip TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_unifi_ts ON unifi_snapshots(ts);
-CREATE INDEX IF NOT EXISTS idx_unifi_mac ON unifi_snapshots(device_mac);
 
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -91,12 +94,42 @@ def init(db_path: str) -> None:
     _conn = sqlite3.connect(db_path, check_same_thread=False)
     _conn.row_factory = sqlite3.Row
     with _lock:
+        # WAL: Lesen (Dashboard) und Schreiben (Poll-Schleifen) blockieren sich
+        # nicht gegenseitig; NORMAL reicht im WAL-Modus für Konsistenz.
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA synchronous=NORMAL")
         _conn.executescript(SCHEMA)
         try:
             _conn.execute("ALTER TABLE device_floor_map ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
         except sqlite3.OperationalError:
             pass  # Spalte existiert bereits (Datenbank auf neuem Stand)
         _conn.commit()
+        _migrate_unifi_snapshots()
+
+
+def _migrate_unifi_snapshots() -> None:
+    """Einmalige Umstellung alter Datenbanken: den letzten Stand je Gerät aus
+    der früheren Roh-JSON-Tabelle übernehmen, die Tabelle löschen und die
+    Datei verkleinern. Erwartet, dass _lock bereits gehalten wird."""
+    exists = _conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'unifi_snapshots'"
+    ).fetchone()
+    if not exists:
+        return
+    rows = _conn.execute(
+        """SELECT s.* FROM unifi_snapshots s
+           JOIN (SELECT device_mac, MAX(ts) AS max_ts FROM unifi_snapshots GROUP BY device_mac) latest
+           ON s.device_mac = latest.device_mac AND s.ts = latest.max_ts"""
+    ).fetchall()
+    for r in rows:
+        try:
+            raw = json.loads(r["raw_json"]) if r["raw_json"] else {}
+        except ValueError:
+            raw = {}
+        _upsert_unifi_device(r["ts"], r["device_mac"], r["device_name"], r["device_type"], r["state"], raw)
+    _conn.execute("DROP TABLE unifi_snapshots")
+    _conn.commit()
+    _conn.execute("VACUUM")
 
 
 def insert_measurement(ts, device_name, floor, target_label, target_ip, sent, received, loss_percent,
@@ -124,13 +157,24 @@ def insert_event(ts, source, severity, category, device_name, floor, message, de
         _conn.commit()
 
 
-def insert_unifi_snapshot(ts, mac, name, dtype, state, raw: dict):
+def _upsert_unifi_device(ts, mac, name, dtype, state, raw: dict) -> None:
+    _conn.execute(
+        """INSERT INTO unifi_devices
+           (device_mac, ts, device_name, device_type, state, model, uptime, satisfaction, num_sta, ip)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(device_mac) DO UPDATE SET
+             ts = excluded.ts, device_name = excluded.device_name, device_type = excluded.device_type,
+             state = excluded.state, model = excluded.model, uptime = excluded.uptime,
+             satisfaction = excluded.satisfaction, num_sta = excluded.num_sta, ip = excluded.ip""",
+        (mac, ts, name, dtype, state, raw.get("model"), raw.get("uptime"), raw.get("satisfaction"),
+         raw.get("num_sta"), raw.get("ip") or raw.get("connect_request_ip")),
+    )
+
+
+def upsert_unifi_device(ts, mac, name, dtype, state, raw: dict) -> None:
+    """Speichert den aktuellen Stand eines UniFi-Geräts (nur angezeigte Felder)."""
     with _lock:
-        _conn.execute(
-            """INSERT INTO unifi_snapshots (ts, device_mac, device_name, device_type, state, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (ts, mac, name, dtype, state, json.dumps(raw, ensure_ascii=False)),
-        )
+        _upsert_unifi_device(ts, mac, name, dtype, state, raw)
         _conn.commit()
 
 
@@ -199,25 +243,20 @@ def events_with_correlation(limit: int, window_seconds: int) -> list[dict]:
     return events
 
 
-def latest_unifi_snapshots() -> list[dict]:
+def latest_unifi_devices() -> list[dict]:
     with _lock:
-        rows = _conn.execute(
-            """SELECT s.* FROM unifi_snapshots s
-               JOIN (SELECT device_mac, MAX(ts) AS max_ts FROM unifi_snapshots GROUP BY device_mac) latest
-               ON s.device_mac = latest.device_mac AND s.ts = latest.max_ts"""
-        ).fetchall()
+        rows = _conn.execute("SELECT * FROM unifi_devices").fetchall()
         floor_rows = _conn.execute("SELECT device_mac, floor, source FROM device_floor_map").fetchall()
     floor_map = {r["device_mac"]: (r["floor"], r["source"]) for r in floor_rows}
     result = []
     for r in rows:
-        raw = json.loads(r["raw_json"]) if r["raw_json"] else {}
         floor, floor_source = floor_map.get(r["device_mac"], (None, None))
         result.append({
             "device_mac": r["device_mac"], "device_name": r["device_name"], "device_type": r["device_type"],
             "state": r["state"], "ts": r["ts"],
-            "model": raw.get("model"), "uptime": raw.get("uptime"), "satisfaction": raw.get("satisfaction"),
-            "num_sta": raw.get("num_sta"), "floor": floor or None, "floor_source": floor_source,
-            "ip": raw.get("ip") or (raw.get("connect_request_ip")),
+            "model": r["model"], "uptime": r["uptime"], "satisfaction": r["satisfaction"],
+            "num_sta": r["num_sta"], "floor": floor or None, "floor_source": floor_source,
+            "ip": r["ip"],
         })
     return result
 
@@ -226,11 +265,7 @@ def latest_device_names() -> dict[str, str]:
     """Zuletzt bekannter Name je UniFi-Gerät (MAC) - für die Erkennung von
     Umbenennungen auch über Server-Neustarts hinweg."""
     with _lock:
-        rows = _conn.execute(
-            """SELECT s.device_mac, s.device_name FROM unifi_snapshots s
-               JOIN (SELECT device_mac, MAX(ts) AS max_ts FROM unifi_snapshots GROUP BY device_mac) latest
-               ON s.device_mac = latest.device_mac AND s.ts = latest.max_ts"""
-        ).fetchall()
+        rows = _conn.execute("SELECT device_mac, device_name FROM unifi_devices").fetchall()
     return {r["device_mac"]: r["device_name"] for r in rows if r["device_name"]}
 
 
@@ -300,10 +335,10 @@ def last_speedtest_ts() -> float:
 
 def prune(now: float) -> None:
     """Alte Daten entfernen, damit die Datenbank nicht unbegrenzt wächst.
-    UniFi-Snapshots (große Roh-JSONs, nur der jeweils letzte wird angezeigt): 24 h.
+    UniFi-Geräte, die seit 24 h nicht mehr gemeldet wurden, verschwinden aus der Liste.
     Ping-Historie: 3 Tage. Messwerte der Agenten: 14 Tage. Ereignisse: 90 Tage."""
     with _lock:
-        _conn.execute("DELETE FROM unifi_snapshots WHERE ts < ?", (now - 24 * 3600,))
+        _conn.execute("DELETE FROM unifi_devices WHERE ts < ?", (now - 24 * 3600,))
         _conn.execute("DELETE FROM ping_history WHERE ts < ?", (now - 3 * 86400,))
         _conn.execute("DELETE FROM speedtest_history WHERE ts < ?", (now - 90 * 86400,))
         _conn.execute("DELETE FROM measurements WHERE ts < ?", (now - 14 * 86400,))

@@ -27,6 +27,8 @@ def get_wlan_info() -> Optional[WlanInfo]:
         proc = subprocess.run(
             ["netsh", "wlan", "show", "interfaces"],
             capture_output=True, text=True, errors="replace", timeout=5,
+            # kein kurz aufblitzendes Konsolenfenster in der Agent-EXE
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         text = proc.stdout
     except Exception:

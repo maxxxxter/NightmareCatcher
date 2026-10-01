@@ -6,6 +6,10 @@ import statistics
 import subprocess
 from typing import Optional, TypedDict
 
+# Die Agent-EXE ist ein Fensterprogramm (--windowed): ohne dieses Flag öffnet
+# Windows für jedes ping/tracert kurz ein Konsolenfenster.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 class PingResult(TypedDict):
     sent: int
@@ -32,7 +36,7 @@ def ping_host(ip: str, count: int = 8, timeout_ms: int = 1000) -> PingResult:
         # cp1252 an - Umlaute wären sonst ein fataler Dekodierfehler.
         proc = subprocess.run(
             cmd, capture_output=True, text=True, errors="replace",
-            timeout=count * (timeout_ms / 1000 + 1) + 5,
+            timeout=count * (timeout_ms / 1000 + 1) + 5, creationflags=NO_WINDOW,
         )
         text = proc.stdout
     except Exception:
@@ -65,7 +69,8 @@ def traceroute(ip: str, max_hops: int = 15) -> str:
     else:
         cmd = ["traceroute", "-n", "-m", str(max_hops), ip]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=60)
+        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=60,
+                              creationflags=NO_WINDOW)
         return proc.stdout
     except Exception as e:
         return f"Traceroute fehlgeschlagen: {e}"

@@ -69,3 +69,123 @@ def test_agent_settings_empty_input_protected(tmp_path, monkeypatch):
     s = agent_settings.load()
     assert s["gateway"] == "10.1.1.1"
     assert s["report_interval_seconds"] == agent_settings.DEFAULTS["report_interval_seconds"]
+
+
+def _load_agent_module():
+    """agent.py importiert 'ping_utils' - beim gemeinsamen Testlauf liegt unter
+    diesem Namen evtl. schon das Server-Modul im Cache. Für den Import daher
+    kurzzeitig das Agent-Modul einsetzen."""
+    import importlib
+    previous = sys.modules.get("ping_utils")
+    sys.modules["ping_utils"] = _load_agent_ping_utils()
+    try:
+        import agent
+        importlib.reload(agent)
+    finally:
+        if previous is not None:
+            sys.modules["ping_utils"] = previous
+        else:
+            del sys.modules["ping_utils"]
+    return agent
+
+
+def test_outbox_flush_stops_on_error(tmp_path):
+    from outbox import Outbox
+    box = Outbox(tmp_path / "o.db", max_rows=3)
+    for i in range(5):
+        box.put({"n": i})
+    assert box.count() == 3  # älteste fallen weg
+
+    got = []
+
+    def flaky(p):
+        if p["n"] == 3:
+            raise ConnectionError("weg")
+        got.append(p["n"])
+
+    try:
+        box.flush(flaky)
+    except ConnectionError:
+        pass
+    assert got == [2] and box.count() == 2
+    assert box.flush(lambda p: got.append(p["n"])) == 2
+    assert got == [2, 3, 4] and box.count() == 0
+
+
+def test_agent_buffers_while_offline_and_reports_disconnect(tmp_path):
+    agent = _load_agent_module()
+    from outbox import Outbox
+    import httpx
+
+    received = []
+    online = {"up": False}
+
+    class FakeClient:
+        def post(self, url, json):
+            if not online["up"]:
+                raise httpx.ConnectError("offline")
+            received.append(json)
+            return httpx.Response(200, request=httpx.Request("POST", url))
+
+    cfg = {"agent": {"device_name": "PC", "floor": "EG", "server_url": "http://srv"}}
+    box = Outbox(tmp_path / "o.db")
+    logs = []
+
+    def payload(ts):
+        return {"device_name": "PC", "floor": "EG", "ts": ts, "connection_type": "LAN",
+                "measurements": [{"target_label": "Gateway"}], "events": []}
+
+    agent._deliver(FakeClient(), cfg, payload(100.0), box, logs.append)
+    agent._deliver(FakeClient(), cfg, payload(110.0), box, logs.append)
+    assert received == [] and box.count() == 2 and box.offline_since == 100.0
+
+    online["up"] = True
+    agent._deliver(FakeClient(), cfg, payload(190.0), box, logs.append)
+    assert box.count() == 0 and box.offline_since is None
+    assert [p["ts"] for p in received] == [190.0, 100.0, 110.0, 100.0]
+    disconnect = received[-1]["events"][0]
+    assert disconnect["category"] == "disconnect" and disconnect["severity"] == "critical"
+    assert disconnect["detail"]["duration_s"] == 90.0
+
+
+def test_agent_drops_payload_rejected_by_server(tmp_path):
+    agent = _load_agent_module()
+    from outbox import Outbox
+    import httpx
+
+    class RejectingClient:
+        def post(self, url, json):
+            return httpx.Response(422, request=httpx.Request("POST", url))
+
+    box = Outbox(tmp_path / "o.db")
+    cfg = {"agent": {"device_name": "PC", "floor": "EG", "server_url": "http://srv"}}
+    agent._deliver(RejectingClient(), cfg, {"ts": 1.0, "events": []}, box, lambda m: None)
+    assert box.count() == 0 and box.offline_since is None
+
+
+def test_run_cycle_measures_targets_in_parallel(monkeypatch):
+    import threading
+    import time as time_mod
+    agent = _load_agent_module()
+    active = {"now": 0, "max": 0}
+    lock = threading.Lock()
+
+    def fake_ping(ip, count=8):
+        with lock:
+            active["now"] += 1
+            active["max"] = max(active["max"], active["now"])
+        time_mod.sleep(0.2)
+        with lock:
+            active["now"] -= 1
+        return {"sent": 4, "received": 4, "avg_latency_ms": 5.0, "jitter_ms": 1.0, "rtts": []}
+
+    monkeypatch.setattr(agent, "ping_host", fake_ping)
+    monkeypatch.setattr(agent, "get_wlan_info", lambda: None)
+    sent = []
+    monkeypatch.setattr(agent, "_deliver", lambda c, cfg, p, o, log: sent.append(p))
+    cfg = {"agent": {"device_name": "PC", "floor": "EG", "server_url": "x", "ping_count": 4},
+           "anomaly": {"loss_percent_trigger": 1.0, "jitter_ms_trigger": 10.0}}
+    targets = [("Gateway", "a"), ("Internet-1", "b"), ("Internet-2", "c")]
+    agent.run_cycle(None, cfg, targets)
+    assert active["max"] == 3
+    assert [m["target_label"] for m in sent[0]["measurements"]] == ["Gateway", "Internet-1", "Internet-2"]
